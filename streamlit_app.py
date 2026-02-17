@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -18,6 +19,7 @@ API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 MLS_LEAGUE_ID = 4346
 MLS_SEASON = "2026"
 ATLANTA_TEAM_NAME = "Atlanta United"
+EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 def load_users() -> dict[str, str]:
@@ -131,6 +133,48 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
         return fixtures_df
 
     return fixtures_df.sort_values("match_kickoff").reset_index(drop=True)
+
+
+def load_schedule_from_json() -> pd.DataFrame:
+    """Load the full season schedule from schedule.json (kickoff times in ET)."""
+    if not SCHEDULE_FILE.exists():
+        return pd.DataFrame()
+
+    with SCHEDULE_FILE.open("r", encoding="utf-8") as infile:
+        events = json.load(infile)
+
+    if not isinstance(events, list):
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for fixture in events:
+        kickoff_date = fixture.get("dateEvent")
+        kickoff_time = fixture.get("strTime")
+        kickoff_value = f"{kickoff_date} {kickoff_time}" if kickoff_time else kickoff_date
+
+        kickoff_local = pd.to_datetime(kickoff_value, errors="coerce")
+        if pd.isna(kickoff_local):
+            kickoff_utc = None
+            kickoff_et_label = "TBD"
+        else:
+            kickoff_local = kickoff_local.tz_localize(EASTERN_TZ)
+            kickoff_utc = kickoff_local.tz_convert(timezone.utc).to_pydatetime()
+            kickoff_et_label = kickoff_local.strftime("%Y-%m-%d %I:%M %p ET")
+
+        rows.append(
+            {
+                "match_id": str(fixture.get("idEvent") or ""),
+                "home_team": fixture.get("strHomeTeam"),
+                "away_team": fixture.get("strAwayTeam"),
+                "match_kickoff": kickoff_utc,
+                "kickoff_et": kickoff_et_label,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame(rows).sort_values("match_kickoff").reset_index(drop=True)
 
 
 def load_predictions(conn: GSheetsConnection) -> pd.DataFrame:
@@ -360,80 +404,122 @@ with st.sidebar:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 fixtures_df = load_mls_atlanta_fixtures()
+schedule_df = load_schedule_from_json()
 now_utc = datetime.now(timezone.utc)
 recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
 
-matches_tab, leaderboard_tab, predictions_tab = st.tabs(["📅 Matches", "🏆 Leaderboard", "🔮 Predictions"])
+if predictions_df.empty or "user_name" not in predictions_df.columns:
+    standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
+else:
+    leaderboard = predictions_df.copy()
+    if "points_earned" not in leaderboard.columns:
+        leaderboard["points_earned"] = 0
+
+    leaderboard["points_earned"] = pd.to_numeric(leaderboard["points_earned"], errors="coerce").fillna(0)
+    standings = (
+        leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
+        .sum()
+        .sort_values("points_earned", ascending=False)
+        .reset_index(drop=True)
+    )
+    standings["Rank"] = standings.index + 1
+    standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
+
+home_tab, matches_tab, leaderboard_tab, predictions_tab = st.tabs(
+    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions"]
+)
+
+with home_tab:
+    st.markdown("### Dashboard")
+
+    st.markdown("#### ⏳ Countdown to Kickoff")
+    if next_match is None:
+        st.info("No future Atlanta United match is currently available from TheSportsDB.")
+    else:
+        kickoff = next_match["match_kickoff"]
+        st.markdown(
+            f"<h1 style='text-align:center;'>{format_countdown(kickoff, now_utc)}</h1>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='text-align:center;font-size:1.2rem;'><strong>{next_match['home_team']} vs {next_match['away_team']}</strong><br>{kickoff.strftime('%Y-%m-%d %H:%M UTC')}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+    st.markdown("#### 🏆 Standings Snapshot (Top 3)")
+    if standings.empty:
+        st.info("No leaderboard data available yet.")
+    else:
+        st.dataframe(standings[["Rank", "User", "Total Points"]].head(3), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.markdown("#### 🕒 Recent Results")
+    if recent_results_df is None or recent_results_df.empty:
+        st.info("No recent Atlanta United results available.")
+    else:
+        recent_display = recent_results_df.copy()
+        recent_display["Date (UTC)"] = recent_display["match_kickoff"].apply(
+            lambda dt: dt.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(dt) else "TBD"
+        )
+        recent_display["Result"] = recent_display.apply(
+            lambda row: f"{row['home_team']} {int(row['final_home'])} - {int(row['final_away'])} {row['away_team']}",
+            axis=1,
+        )
+        st.dataframe(recent_display[["Date (UTC)", "Result"]], use_container_width=True, hide_index=True)
 
 with matches_tab:
     st.markdown(f"### {MLS_SEASON} Atlanta United Full Schedule")
-    if fixtures_df.empty:
-        st.info("No Atlanta United fixtures are currently available.")
+    if schedule_df.empty:
+        st.info("No schedule entries found in schedule.json.")
     else:
-        matches_display = fixtures_df.sort_values("match_kickoff").copy()
+        matches_display = schedule_df.copy()
 
-        if next_match is not None:
-            matches_display["is_next_match"] = matches_display["match_id"].astype(str).eq(str(next_match["match_id"]))
-        else:
-            matches_display["is_next_match"] = False
+        score_map: dict[str, tuple[Optional[int], Optional[int]]] = {}
+        if not predictions_df.empty and "match_id" in predictions_df.columns:
+            scored = predictions_df.copy()
+            for col in ["final_home", "final_away"]:
+                if col not in scored.columns:
+                    scored[col] = pd.NA
+                scored[col] = pd.to_numeric(scored[col], errors="coerce")
 
-        def match_status(row: pd.Series) -> str:
-            kickoff = row.get("match_kickoff")
-            final_home = row.get("final_home")
-            final_away = row.get("final_away")
+            scored = scored[scored["final_home"].notna() & scored["final_away"].notna()].copy()
+            scored = scored.sort_values("submitted_at") if "submitted_at" in scored.columns else scored
+            for _, row in scored.iterrows():
+                score_map[str(row["match_id"])] = (int(row["final_home"]), int(row["final_away"]))
 
-            if pd.notna(final_home) and pd.notna(final_away):
-                return f"{row['home_team']} {int(final_home)} - {int(final_away)} {row['away_team']}"
-
-            if pd.notna(kickoff):
-                kickoff_dt = pd.Timestamp(kickoff).to_pydatetime()
-                if kickoff_dt <= now_utc:
-                    return "Match completed (score pending)"
-                kickoff_str = kickoff_dt.strftime("%Y-%m-%d %H:%M UTC")
-                if bool(row.get("is_next_match")):
-                    return f"Kickoff: {kickoff_str} • Predictions Open"
-                return f"Kickoff: {kickoff_str}"
-
-            return "Kickoff TBD"
-
-        matches_display["Status"] = matches_display.apply(match_status, axis=1)
-        matches_display["Date (UTC)"] = matches_display["match_kickoff"].apply(
-            lambda dt: dt.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(dt) else "TBD"
+        matches_display["final_home"] = matches_display["match_id"].astype(str).map(
+            lambda mid: score_map.get(mid, (None, None))[0]
+        )
+        matches_display["final_away"] = matches_display["match_id"].astype(str).map(
+            lambda mid: score_map.get(mid, (None, None))[1]
         )
 
+        def schedule_status(row: pd.Series) -> str:
+            if pd.notna(row.get("final_home")) and pd.notna(row.get("final_away")):
+                return f"{row['home_team']} {int(row['final_home'])} - {int(row['final_away'])} {row['away_team']}"
+            kickoff = row.get("match_kickoff")
+            if pd.notna(kickoff) and pd.Timestamp(kickoff).to_pydatetime() <= now_utc:
+                return "Match completed (score pending)"
+            return "Scheduled"
+
+        matches_display["Status"] = matches_display.apply(schedule_status, axis=1)
         st.dataframe(
-            matches_display[["Date (UTC)", "home_team", "away_team", "Status"]].rename(
-                columns={"home_team": "Home Team", "away_team": "Away Team"}
-            ).reset_index(drop=True),
+            matches_display[["kickoff_et", "home_team", "away_team", "Status"]]
+            .rename(columns={"kickoff_et": "Kickoff (ET)", "home_team": "Home Team", "away_team": "Away Team"})
+            .reset_index(drop=True),
             use_container_width=True,
             hide_index=True,
         )
 
 with leaderboard_tab:
     st.markdown("### Season Standings")
-    if predictions_df.empty or "user_name" not in predictions_df.columns:
+    if standings.empty:
         st.info("No prediction data available for leaderboard standings yet.")
     else:
-        leaderboard = predictions_df.copy()
-        if "points_earned" not in leaderboard.columns:
-            leaderboard["points_earned"] = 0
-
-        leaderboard["points_earned"] = pd.to_numeric(leaderboard["points_earned"], errors="coerce").fillna(0)
-        standings = (
-            leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
-            .sum()
-            .sort_values("points_earned", ascending=False)
-            .reset_index(drop=True)
-        )
-
-        if standings.empty:
-            st.info("No leaderboard entries available yet.")
-        else:
-            standings["Rank"] = standings.index + 1
-            standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
-            st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
+        st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
 with predictions_tab:
     if next_match is not None:
