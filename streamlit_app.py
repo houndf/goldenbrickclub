@@ -72,6 +72,13 @@ def calculate_points(
     return -1
 
 
+def get_segment_id(match_index: int) -> str:
+    """Return segment label for a 0-indexed season match index."""
+    if match_index in (0, 1):
+        return "Segment 1"
+    return f"Segment {((match_index - 2) // 4) + 2}"
+
+
 def parse_kickoff(value: object) -> Optional[datetime]:
     """Convert a sheet/API value into a timezone-aware UTC datetime when possible."""
     if pd.isna(value):
@@ -422,14 +429,35 @@ recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
 
+match_segments = pd.DataFrame(columns=["match_id", "segment_id"])
+if not schedule_df.empty and "match_id" in schedule_df.columns:
+    match_segments = schedule_df[["match_id"]].copy().reset_index(drop=True)
+elif not fixtures_df.empty and "match_id" in fixtures_df.columns:
+    match_segments = fixtures_df[["match_id"]].copy().reset_index(drop=True)
+
+if not match_segments.empty:
+    match_segments["match_id"] = match_segments["match_id"].astype(str)
+    match_segments["segment_id"] = match_segments.index.map(get_segment_id)
+
 if predictions_df.empty or "user_name" not in predictions_df.columns:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
+    current_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+    latest_segment_id: Optional[str] = None
+    latest_segment_in_progress = False
 else:
     leaderboard = predictions_df.copy()
-    if "points_earned" not in leaderboard.columns:
-        leaderboard["points_earned"] = 0
+    for col in ["points_earned", "final_home", "final_away", "match_id"]:
+        if col not in leaderboard.columns:
+            leaderboard[col] = pd.NA
 
     leaderboard["points_earned"] = pd.to_numeric(leaderboard["points_earned"], errors="coerce").fillna(0)
+    leaderboard["match_id"] = leaderboard["match_id"].astype(str)
+
+    if not match_segments.empty:
+        leaderboard = leaderboard.merge(match_segments, on="match_id", how="left")
+    else:
+        leaderboard["segment_id"] = pd.NA
+
     standings = (
         leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
         .sum()
@@ -438,6 +466,35 @@ else:
     )
     standings["Rank"] = standings.index + 1
     standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
+
+    completed_rows = leaderboard[leaderboard["final_home"].notna() & leaderboard["final_away"].notna()].copy()
+    completed_match_ids = set(completed_rows["match_id"].dropna().astype(str).tolist())
+
+    latest_segment_id = None
+    latest_segment_in_progress = False
+    current_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+
+    if completed_match_ids and not match_segments.empty:
+        completed_segments = match_segments[match_segments["match_id"].isin(completed_match_ids)].copy()
+        if not completed_segments.empty:
+            latest_match_index = completed_segments.index.max()
+            latest_segment_id = completed_segments.loc[latest_match_index, "segment_id"]
+
+            segment_match_ids = set(match_segments[match_segments["segment_id"] == latest_segment_id]["match_id"].tolist())
+            latest_segment_in_progress = bool(segment_match_ids - completed_match_ids)
+
+            scored_segment_rows = completed_rows[completed_rows["match_id"].isin(segment_match_ids)].copy()
+            if not scored_segment_rows.empty:
+                current_segment_standings = (
+                    scored_segment_rows.groupby("user_name", dropna=True, as_index=False)["points_earned"]
+                    .sum()
+                    .sort_values("points_earned", ascending=False)
+                    .reset_index(drop=True)
+                )
+                current_segment_standings["Rank"] = current_segment_standings.index + 1
+                current_segment_standings = current_segment_standings.rename(
+                    columns={"user_name": "User", "points_earned": "Segment Points"}
+                )
 
 home_tab, matches_tab, leaderboard_tab, predictions_tab = st.tabs(
     ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions"]
@@ -527,11 +584,42 @@ with matches_tab:
         )
 
 with leaderboard_tab:
+    if latest_segment_id and not current_segment_standings.empty:
+        top_user = current_segment_standings.iloc[0]
+        bottom_user = current_segment_standings.iloc[-1]
+        if latest_segment_in_progress:
+            st.markdown(
+                f"### {latest_segment_id}: 🟢 Current Leader — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+            )
+            st.markdown(
+                f"### {latest_segment_id}: 🔻 Current Tail-ender — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+            )
+        else:
+            st.markdown(
+                f"### {latest_segment_id}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+            )
+            st.markdown(
+                f"### {latest_segment_id}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+            )
+    else:
+        st.info("Segment trophies will appear once a segment has a completed match.")
+
+    st.divider()
     st.markdown("### Season Standings")
     if standings.empty:
         st.info("No prediction data available for leaderboard standings yet.")
     else:
         st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
+
+    st.markdown("### Current Segment Standings")
+    if current_segment_standings.empty:
+        st.info("No completed-match points are available for the current segment yet.")
+    else:
+        st.dataframe(
+            current_segment_standings[["Rank", "User", "Segment Points"]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 with predictions_tab:
     if next_match is not None:
