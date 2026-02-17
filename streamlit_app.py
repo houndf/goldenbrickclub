@@ -52,12 +52,24 @@ def calculate_points(
     if actual_home is None or actual_away is None:
         return 0
 
+    predicted_home_match = predicted_home == actual_home
+    predicted_away_match = predicted_away == actual_away
+
     if predicted_home == actual_home and predicted_away == actual_away:
         return 3
 
     predicted_result = (predicted_home > predicted_away) - (predicted_home < predicted_away)
     actual_result = (actual_home > actual_away) - (actual_home < actual_away)
-    return 1 if predicted_result == actual_result else 0
+    correct_result = predicted_result == actual_result
+    has_partial_score_match = predicted_home_match or predicted_away_match
+
+    if correct_result and has_partial_score_match:
+        return 2
+    if correct_result:
+        return 1
+    if has_partial_score_match:
+        return 0
+    return -1
 
 
 def parse_kickoff(value: object) -> Optional[datetime]:
@@ -591,8 +603,10 @@ with predictions_tab:
     st.markdown("### Points Logic")
     st.code(
         """calculate_points(pred_home, pred_away, actual_home, actual_away)
-- 3 points for exact score
-- 1 point for correct result (W/D/L)
-- 0 otherwise""",
+- 3 points: exact score (home and away both match)
+- 2 points: correct result (W/D/L) + one score matches
+- 1 point: correct result (W/D/L) only
+- 0 points: incorrect result (W/D/L) + one score matches
+- -1 point: incorrect result (W/D/L) and neither score matches""",
         language="text",
     )
