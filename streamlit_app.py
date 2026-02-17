@@ -72,13 +72,6 @@ def calculate_points(
     return -1
 
 
-def get_segment_id(match_index: int) -> str:
-    """Return segment label for a 0-indexed season match index."""
-    if match_index in (0, 1):
-        return "Segment 1"
-    return f"Segment {((match_index - 2) // 4) + 2}"
-
-
 def parse_kickoff(value: object) -> Optional[datetime]:
     """Convert a sheet/API value into a timezone-aware UTC datetime when possible."""
     if pd.isna(value):
@@ -183,6 +176,7 @@ def load_schedule_from_json() -> pd.DataFrame:
         rows.append(
             {
                 "match_id": str(fixture.get("idEvent") or ""),
+                "segment": _as_int(fixture.get("segment")),
                 "home_team": fixture.get("strHomeTeam"),
                 "away_team": fixture.get("strAwayTeam"),
                 "match_kickoff": kickoff_utc,
@@ -429,15 +423,13 @@ recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
 
-match_segments = pd.DataFrame(columns=["match_id", "segment_id"])
-if not schedule_df.empty and "match_id" in schedule_df.columns:
-    match_segments = schedule_df[["match_id"]].copy().reset_index(drop=True)
-elif not fixtures_df.empty and "match_id" in fixtures_df.columns:
-    match_segments = fixtures_df[["match_id"]].copy().reset_index(drop=True)
+match_segments = pd.DataFrame(columns=["match_id", "segment"])
+if not schedule_df.empty and {"match_id", "segment"}.issubset(schedule_df.columns):
+    match_segments = schedule_df[["match_id", "segment"]].copy().reset_index(drop=True)
 
 if not match_segments.empty:
     match_segments["match_id"] = match_segments["match_id"].astype(str)
-    match_segments["segment_id"] = match_segments.index.map(get_segment_id)
+    match_segments["segment"] = pd.to_numeric(match_segments["segment"], errors="coerce").astype("Int64")
 
 if predictions_df.empty or "user_name" not in predictions_df.columns:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
@@ -456,7 +448,7 @@ else:
     if not match_segments.empty:
         leaderboard = leaderboard.merge(match_segments, on="match_id", how="left")
     else:
-        leaderboard["segment_id"] = pd.NA
+        leaderboard["segment"] = pd.NA
 
     standings = (
         leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
@@ -478,10 +470,15 @@ else:
         completed_segments = match_segments[match_segments["match_id"].isin(completed_match_ids)].copy()
         if not completed_segments.empty:
             latest_match_index = completed_segments.index.max()
-            latest_segment_id = completed_segments.loc[latest_match_index, "segment_id"]
+            latest_segment = completed_segments.loc[latest_match_index, "segment"]
+            latest_segment_id = f"Segment {int(latest_segment)}" if pd.notna(latest_segment) else None
 
-            segment_match_ids = set(match_segments[match_segments["segment_id"] == latest_segment_id]["match_id"].tolist())
-            latest_segment_in_progress = bool(segment_match_ids - completed_match_ids)
+            segment_match_ids: set[str] = set()
+            if pd.notna(latest_segment):
+                segment_match_ids = set(
+                    match_segments[match_segments["segment"] == latest_segment]["match_id"].tolist()
+                )
+                latest_segment_in_progress = bool(segment_match_ids - completed_match_ids)
 
             scored_segment_rows = completed_rows[completed_rows["match_id"].isin(segment_match_ids)].copy()
             if not scored_segment_rows.empty:
@@ -575,9 +572,19 @@ with matches_tab:
             return "Scheduled"
 
         matches_display["Status"] = matches_display.apply(schedule_status, axis=1)
+        matches_display["segment_label"] = matches_display["segment"].apply(
+            lambda value: f"Segment {int(value)}" if pd.notna(value) else "TBD"
+        )
         st.dataframe(
-            matches_display[["kickoff_et", "home_team", "away_team", "Status"]]
-            .rename(columns={"kickoff_et": "Kickoff (ET)", "home_team": "Home Team", "away_team": "Away Team"})
+            matches_display[["segment_label", "kickoff_et", "home_team", "away_team", "Status"]]
+            .rename(
+                columns={
+                    "segment_label": "Segment",
+                    "kickoff_et": "Kickoff (ET)",
+                    "home_team": "Home Team",
+                    "away_team": "Away Team",
+                }
+            )
             .reset_index(drop=True),
             use_container_width=True,
             hide_index=True,
@@ -596,10 +603,10 @@ with leaderboard_tab:
             )
         else:
             st.markdown(
-                f"### {latest_segment_id}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+                f"### {latest_segment_id} Trophy Holders: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
             )
             st.markdown(
-                f"### {latest_segment_id}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+                f"### {latest_segment_id} Trophy Holders: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
             )
     else:
         st.info("Segment trophies will appear once a segment has a completed match.")
