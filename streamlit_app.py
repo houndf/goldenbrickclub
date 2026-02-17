@@ -13,9 +13,8 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Atlanta United Prediction League", layout="wide")
 
 USERS_FILE = Path(__file__).with_name("users.json")
-API_HOST = "api-football-v1.p.rapidapi.com"
-MLS_LEAGUE_ID = 253
-MLS_SEASON = 2026
+API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
+MLS_LEAGUE_ID = 4346
 ATLANTA_TEAM_NAME = "Atlanta United"
 
 
@@ -77,47 +76,35 @@ def _as_int(value: object) -> Optional[int]:
 
 
 def load_mls_atlanta_fixtures() -> pd.DataFrame:
-    """Load MLS fixtures for 2026 and retain only Atlanta United matches."""
-    api_key = st.secrets.get("rapidapi_key")
-    if not api_key:
-        st.error("Missing st.secrets['rapidapi_key']; unable to load live MLS fixtures.")
-        return pd.DataFrame()
-
-    url = f"https://{API_HOST}/v3/fixtures"
-    headers = {
-        "x-rapidapi-host": API_HOST,
-        "x-rapidapi-key": api_key,
-    }
-    params = {"league": MLS_LEAGUE_ID, "season": MLS_SEASON}
+    """Load upcoming MLS fixtures and retain only Atlanta United matches."""
+    url = f"{API_BASE_URL}/eventsnextleague.php"
+    params = {"id": MLS_LEAGUE_ID}
 
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
+        response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        st.error(f"Failed to fetch fixtures from API-Football: {exc}")
+        st.error(f"Failed to fetch fixtures from TheSportsDB: {exc}")
         return pd.DataFrame()
 
     rows: list[dict[str, Any]] = []
-    for fixture in payload.get("response", []):
-        home_name = fixture.get("teams", {}).get("home", {}).get("name")
-        away_name = fixture.get("teams", {}).get("away", {}).get("name")
+    for fixture in payload.get("events") or []:
+        home_name = fixture.get("strHomeTeam")
+        away_name = fixture.get("strAwayTeam")
         if ATLANTA_TEAM_NAME not in (home_name, away_name):
             continue
 
-        fixture_info = fixture.get("fixture", {})
-        goals = fixture.get("goals", {})
-        status = fixture_info.get("status", {})
+        kickoff_date = fixture.get("dateEvent")
+        kickoff_time = fixture.get("strTime")
+        kickoff_value = f"{kickoff_date} {kickoff_time}" if kickoff_time else kickoff_date
+
         rows.append(
             {
-                "match_id": str(fixture_info.get("id")),
+                "match_id": str(fixture.get("idEvent")),
                 "home_team": home_name,
                 "away_team": away_name,
-                "match_kickoff": parse_kickoff(fixture_info.get("date")),
-                "status_short": status.get("short"),
-                "status_long": status.get("long"),
-                "final_home": _as_int(goals.get("home")),
-                "final_away": _as_int(goals.get("away")),
+                "match_kickoff": parse_kickoff(kickoff_value),
             }
         )
 
@@ -186,16 +173,18 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
         return None, "No fixture kickoff timestamps are available."
 
     today = now_utc.date()
-    today_matches = with_kickoff[with_kickoff["match_kickoff"].dt.date == today]
-    unresolved_today = today_matches[~today_matches["status_short"].astype(str).eq("FT")]
+    if "status_short" in with_kickoff.columns:
+        today_matches = with_kickoff[with_kickoff["match_kickoff"].dt.date == today]
+        unresolved_today = today_matches[~today_matches["status_short"].astype(str).eq("FT")]
 
-    if not unresolved_today.empty:
-        current_match = unresolved_today.sort_values("match_kickoff").iloc[0]
-        return (
-            None,
-            f"Predictions are locked until today's match is final (FT): "
-            f"{current_match['home_team']} vs {current_match['away_team']} ({current_match['status_long']}).",
-        )
+        if not unresolved_today.empty:
+            current_match = unresolved_today.sort_values("match_kickoff").iloc[0]
+            status_long = current_match.get("status_long") or "In progress"
+            return (
+                None,
+                f"Predictions are locked until today's match is final (FT): "
+                f"{current_match['home_team']} vs {current_match['away_team']} ({status_long}).",
+            )
 
     upcoming = with_kickoff[with_kickoff["match_kickoff"] > now_utc]
     if upcoming.empty:
@@ -205,18 +194,54 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
 
 
 def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.DataFrame, now_utc: datetime) -> Optional[pd.DataFrame]:
-    """Find latest FT match and update points_earned for all submitted predictions."""
-    if fixtures_df.empty:
+    """Find latest finished Atlanta United match and update points_earned for all submitted predictions."""
+    del fixtures_df
+
+    url = f"{API_BASE_URL}/eventspastleague.php"
+    params = {"id": MLS_LEAGUE_ID}
+
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        st.error(f"Failed to fetch completed matches from TheSportsDB: {exc}")
         return None
 
-    completed = fixtures_df[
-        fixtures_df["status_short"].astype(str).eq("FT") & fixtures_df["match_kickoff"].notna()
-    ].copy()
-    completed = completed[completed["match_kickoff"] <= now_utc]
-    if completed.empty:
+    rows: list[dict[str, Any]] = []
+    for event in payload.get("events") or []:
+        home_name = event.get("strHomeTeam")
+        away_name = event.get("strAwayTeam")
+        if ATLANTA_TEAM_NAME not in (home_name, away_name):
+            continue
+
+        home_score = _as_int(event.get("intHomeScore"))
+        away_score = _as_int(event.get("intAwayScore"))
+        if home_score is None or away_score is None:
+            continue
+
+        match_date = event.get("dateEvent")
+        match_time = event.get("strTime")
+        kickoff_value = f"{match_date} {match_time}" if match_time else match_date
+        kickoff = parse_kickoff(kickoff_value)
+        if kickoff is None or kickoff > now_utc:
+            continue
+
+        rows.append(
+            {
+                "match_id": str(event.get("idEvent")),
+                "home_team": home_name,
+                "away_team": away_name,
+                "match_kickoff": kickoff,
+                "final_home": home_score,
+                "final_away": away_score,
+            }
+        )
+
+    if not rows:
         return None
 
-    latest = completed.sort_values("match_kickoff").iloc[-1]
+    latest = pd.DataFrame(rows).sort_values("match_kickoff").iloc[-1]
     actual_home = _as_int(latest["final_home"])
     actual_away = _as_int(latest["final_away"])
     if actual_home is None or actual_away is None:
@@ -261,7 +286,7 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 
 
 st.title("⚽ Atlanta United MLS Prediction League")
-st.caption("Live fixtures via API-Football (RapidAPI) with auto-scoring in Google Sheets.")
+st.caption("Live fixtures via TheSportsDB V1 API with auto-scoring in Google Sheets.")
 
 with st.sidebar:
     st.header("User Access")
