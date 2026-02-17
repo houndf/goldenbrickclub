@@ -16,6 +16,7 @@ USERS_FILE = Path(__file__).with_name("users.json")
 SCHEDULE_FILE = Path(__file__).with_name("schedule.json")
 API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 MLS_LEAGUE_ID = 4346
+MLS_SEASON = "2026"
 ATLANTA_TEAM_NAME = "Atlanta United"
 
 
@@ -78,8 +79,8 @@ def _as_int(value: object) -> Optional[int]:
 
 def load_mls_atlanta_fixtures() -> pd.DataFrame:
     """Load the full Atlanta United MLS season schedule from API, with local fallback."""
-    url = f"{API_BASE_URL}/eventsseason.php"
-    params = {"id": MLS_LEAGUE_ID, "s": "2026"}
+    # Use TheSportsDB "events by season" endpoint to load the complete MLS schedule.
+    url = f"{API_BASE_URL}/eventsseason.php?id={MLS_LEAGUE_ID}&s={MLS_SEASON}"
 
     def fixture_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -107,7 +108,7 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
         return rows
 
     try:
-        response = requests.get(url, params=params, timeout=20)
+        response = requests.get(url, timeout=20)
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
@@ -367,7 +368,7 @@ predictions_df = load_predictions(conn)
 matches_tab, leaderboard_tab, predictions_tab = st.tabs(["📅 Matches", "🏆 Leaderboard", "🔮 Predictions"])
 
 with matches_tab:
-    st.markdown("### 2026 Atlanta United Full Schedule")
+    st.markdown(f"### {MLS_SEASON} Atlanta United Full Schedule")
     if fixtures_df.empty:
         st.info("No Atlanta United fixtures are currently available.")
     else:
