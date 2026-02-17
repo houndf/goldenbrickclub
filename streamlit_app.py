@@ -194,7 +194,7 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
 
 
 def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.DataFrame, now_utc: datetime) -> Optional[pd.DataFrame]:
-    """Find latest finished Atlanta United match and update points_earned for all submitted predictions."""
+    """Find finished Atlanta United matches, score latest one, and return recent results."""
     del fixtures_df
 
     url = f"{API_BASE_URL}/eventspastleague.php"
@@ -241,7 +241,8 @@ def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.Da
     if not rows:
         return None
 
-    latest = pd.DataFrame(rows).sort_values("match_kickoff").iloc[-1]
+    results_df = pd.DataFrame(rows).sort_values("match_kickoff").reset_index(drop=True)
+    latest = results_df.iloc[-1]
     actual_home = _as_int(latest["final_home"])
     actual_away = _as_int(latest["final_away"])
     if actual_home is None or actual_away is None:
@@ -249,7 +250,7 @@ def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.Da
 
     predictions = load_predictions(conn)
     if predictions.empty:
-        return latest.to_frame().T
+        return results_df.sort_values("match_kickoff", ascending=False).head(10).reset_index(drop=True)
 
     for col in ["pred_home", "pred_away", "match_id", "points_earned", "final_home", "final_away"]:
         if col not in predictions.columns:
@@ -272,7 +273,7 @@ def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.Da
         predictions.loc[target_rows, "final_away"] = actual_away
         save_predictions(conn, predictions)
 
-    return latest.to_frame().T
+    return results_df.sort_values("match_kickoff", ascending=False).head(10).reset_index(drop=True)
 
 
 def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
@@ -342,104 +343,127 @@ with st.sidebar:
 conn = st.connection("gsheets", type=GSheetsConnection)
 fixtures_df = load_mls_atlanta_fixtures()
 now_utc = datetime.now(timezone.utc)
-latest_finished_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
+recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
+predictions_df = load_predictions(conn)
 
-if next_match is not None:
-    kickoff = next_match["match_kickoff"]
-    st.markdown("## ⏳ Countdown to Kickoff")
-    st.markdown(
-        f"<h1 style='text-align:center;'>{format_countdown(kickoff, now_utc)}</h1>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"<div style='text-align:center;font-size:1.2rem;'><strong>{next_match['home_team']} vs {next_match['away_team']}</strong><br>{kickoff.strftime('%Y-%m-%d %H:%M UTC')}</div>",
-        unsafe_allow_html=True,
-    )
+matches_tab, leaderboard_tab, predictions_tab = st.tabs(["📅 Matches", "🏆 Leaderboard", "🔮 Predictions"])
 
-st.divider()
-st.markdown("### Recent Results")
-if latest_finished_df is None or latest_finished_df.empty:
-    st.info("No completed Atlanta United match has been scored yet.")
-else:
-    last_match = latest_finished_df.iloc[0]
-    st.success(
-        f"Latest completed match: {last_match['home_team']} {int(last_match['final_home'])} - {int(last_match['final_away'])} {last_match['away_team']}"
-    )
-
-    predictions_df = load_predictions(conn)
-    if predictions_df.empty or "match_id" not in predictions_df.columns:
-        st.caption("No predictions found for the latest match.")
+with matches_tab:
+    st.markdown("### 10 Most Recent Atlanta United Results")
+    if recent_results_df is None or recent_results_df.empty:
+        st.info("No completed Atlanta United matches are currently available.")
     else:
-        latest_rows = predictions_df[predictions_df["match_id"].astype(str) == str(last_match["match_id"])].copy()
-        if latest_rows.empty:
-            st.caption("No user predictions were submitted for the latest match.")
+        matches_display = recent_results_df.copy()
+        matches_display["Final Score"] = (
+            matches_display["final_home"].astype("Int64").astype(str)
+            + " - "
+            + matches_display["final_away"].astype("Int64").astype(str)
+        )
+        st.dataframe(
+            matches_display[["home_team", "Final Score", "away_team"]].rename(
+                columns={"home_team": "Home Team", "away_team": "Away Team"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+with leaderboard_tab:
+    st.markdown("### Season Standings")
+    if predictions_df.empty or "user_name" not in predictions_df.columns:
+        st.info("No prediction data available for leaderboard standings yet.")
+    else:
+        leaderboard = predictions_df.copy()
+        if "points_earned" not in leaderboard.columns:
+            leaderboard["points_earned"] = 0
+
+        leaderboard["points_earned"] = pd.to_numeric(leaderboard["points_earned"], errors="coerce").fillna(0)
+        standings = (
+            leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
+            .sum()
+            .sort_values("points_earned", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        if standings.empty:
+            st.info("No leaderboard entries available yet.")
         else:
-            display_cols = [
-                c
-                for c in ["user_name", "pred_home", "pred_away", "points_earned", "final_home", "final_away"]
-                if c in latest_rows.columns
-            ]
-            st.dataframe(latest_rows[display_cols], use_container_width=True)
+            standings["Rank"] = standings.index + 1
+            standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
+            st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
-st.divider()
-if not is_logged_in:
-    st.warning("Please log in from the sidebar to submit a prediction.")
-elif lock_message:
-    st.warning(lock_message)
-elif next_match is None:
-    st.info("No match currently open for prediction.")
-else:
-    with st.form("prediction_form", clear_on_submit=False):
-        st.subheader("Prediction Window: Next Atlanta United Match Only")
-        st.write(
-            f"**{next_match['home_team']} vs {next_match['away_team']}**  \\\nKickoff: {next_match['match_kickoff'].strftime('%Y-%m-%d %H:%M UTC')}"
+with predictions_tab:
+    if next_match is not None:
+        kickoff = next_match["match_kickoff"]
+        st.markdown("## ⏳ Countdown to Kickoff")
+        st.markdown(
+            f"<h1 style='text-align:center;'>{format_countdown(kickoff, now_utc)}</h1>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='text-align:center;font-size:1.2rem;'><strong>{next_match['home_team']} vs {next_match['away_team']}</strong><br>{kickoff.strftime('%Y-%m-%d %H:%M UTC')}</div>",
+            unsafe_allow_html=True,
         )
 
-        col1, col2 = st.columns(2)
-        pred_home = col1.number_input(
-            f"{next_match['home_team']} goals",
-            min_value=0,
-            max_value=15,
-            step=1,
-            key=f"home_{next_match['match_id']}",
-        )
-        pred_away = col2.number_input(
-            f"{next_match['away_team']} goals",
-            min_value=0,
-            max_value=15,
-            step=1,
-            key=f"away_{next_match['match_id']}",
-        )
+    st.divider()
+    if not is_logged_in:
+        st.warning("Please log in from the sidebar to submit a prediction.")
+    elif lock_message:
+        st.warning(lock_message)
+    elif next_match is None:
+        st.info("No match currently open for prediction.")
+    else:
+        with st.form("prediction_form", clear_on_submit=False):
+            st.subheader("Prediction Window: Next Atlanta United Match Only")
+            st.write(
+                f"**{next_match['home_team']} vs {next_match['away_team']}**\n"
+                f"Kickoff: {next_match['match_kickoff'].strftime('%Y-%m-%d %H:%M UTC')}"
+            )
 
-        submitted = st.form_submit_button("Save Prediction")
+            col1, col2 = st.columns(2)
+            pred_home = col1.number_input(
+                f"{next_match['home_team']} goals",
+                min_value=0,
+                max_value=15,
+                step=1,
+                key=f"home_{next_match['match_id']}",
+            )
+            pred_away = col2.number_input(
+                f"{next_match['away_team']} goals",
+                min_value=0,
+                max_value=15,
+                step=1,
+                key=f"away_{next_match['match_id']}",
+            )
 
-    if submitted:
-        if now_utc >= next_match["match_kickoff"]:
-            st.error("Predictions are closed for this match (kickoff has passed).")
-        else:
-            row = {
-                "submitted_at": now_utc.isoformat(),
-                "user_name": active_user_name,
-                "match_id": str(next_match["match_id"]),
-                "home_team": next_match["home_team"],
-                "away_team": next_match["away_team"],
-                "match_kickoff": next_match["match_kickoff"].isoformat(),
-                "pred_home": int(pred_home),
-                "pred_away": int(pred_away),
-                "points_earned": pd.NA,
-                "final_home": pd.NA,
-                "final_away": pd.NA,
-            }
-            upsert_user_prediction(conn, row)
-            st.success("Prediction saved to Google Sheets.")
+            submitted = st.form_submit_button("Save Prediction")
 
-st.divider()
-st.markdown("### Points Logic")
-st.code(
-    """calculate_points(pred_home, pred_away, actual_home, actual_away)\n"
-    "- 3 points for exact score\n"
-    "- 1 point for correct result (W/D/L)\n"
-    "- 0 otherwise""",
-    language="text",
-)
+        if submitted:
+            if now_utc >= next_match["match_kickoff"]:
+                st.error("Predictions are closed for this match (kickoff has passed).")
+            else:
+                row = {
+                    "submitted_at": now_utc.isoformat(),
+                    "user_name": active_user_name,
+                    "match_id": str(next_match["match_id"]),
+                    "home_team": next_match["home_team"],
+                    "away_team": next_match["away_team"],
+                    "match_kickoff": next_match["match_kickoff"].isoformat(),
+                    "pred_home": int(pred_home),
+                    "pred_away": int(pred_away),
+                    "points_earned": pd.NA,
+                    "final_home": pd.NA,
+                    "final_away": pd.NA,
+                }
+                upsert_user_prediction(conn, row)
+                st.success("Prediction saved to Google Sheets.")
+
+    st.divider()
+    st.markdown("### Points Logic")
+    st.code(
+        """calculate_points(pred_home, pred_away, actual_home, actual_away)
+- 3 points for exact score
+- 1 point for correct result (W/D/L)
+- 0 otherwise""",
+        language="text",
+    )
