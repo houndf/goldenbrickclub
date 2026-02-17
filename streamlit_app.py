@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -8,6 +10,28 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="MLS Prediction Leaderboard", layout="wide")
+
+USERS_FILE = Path(__file__).with_name("users.json")
+
+
+def load_users() -> dict[str, str]:
+    """Load users and passcodes from the local JSON file."""
+    if not USERS_FILE.exists():
+        return {}
+
+    with USERS_FILE.open("r", encoding="utf-8") as infile:
+        users = json.load(infile)
+
+    if isinstance(users, dict):
+        return {str(name): str(passcode) for name, passcode in users.items()}
+
+    return {}
+
+
+def save_users(users: dict[str, str]) -> None:
+    """Persist users and passcodes to disk."""
+    with USERS_FILE.open("w", encoding="utf-8") as outfile:
+        json.dump(users, outfile, indent=2)
 
 
 def calculate_points(
@@ -103,14 +127,55 @@ st.title("⚽ MLS Prediction Leaderboard")
 st.caption("Submit your predictions before kickoff and track points in Google Sheets.")
 
 with st.sidebar:
-    st.header("User Login")
-    user_name = st.text_input("Name", placeholder="Your display name")
-    passcode = st.text_input("Passcode", type="password")
-    is_logged_in = bool(user_name.strip()) and bool(passcode.strip())
-    if is_logged_in:
-        st.success("Logged in")
-    else:
-        st.info("Enter name and passcode to start")
+    st.header("User Access")
+    st.session_state.setdefault("logged_in_user", None)
+
+    login_tab, signup_tab = st.tabs(["Login", "Sign Up"])
+
+    with login_tab:
+        user_name = st.text_input("Name", placeholder="Your display name")
+        passcode = st.text_input("Passcode", type="password")
+        login_clicked = st.button("Log In", type="primary")
+
+        if login_clicked:
+            users = load_users()
+            entered_name = user_name.strip()
+            entered_passcode = passcode.strip()
+
+            if users.get(entered_name) == entered_passcode and entered_name:
+                st.session_state["logged_in_user"] = entered_name
+                st.success("Logged in")
+            else:
+                st.error("Invalid name or passcode")
+
+        if st.session_state["logged_in_user"]:
+            st.caption(f"Logged in as **{st.session_state['logged_in_user']}**")
+            if st.button("Log Out"):
+                st.session_state["logged_in_user"] = None
+                st.info("Logged out")
+
+    with signup_tab:
+        new_user_name = st.text_input("New username", key="signup_name")
+        new_passcode = st.text_input("New passcode", type="password", key="signup_pass")
+        create_account_clicked = st.button("Create Account")
+
+        if create_account_clicked:
+            entered_name = new_user_name.strip()
+            entered_passcode = new_passcode.strip()
+
+            if not entered_name or not entered_passcode:
+                st.error("Please enter both a username and passcode.")
+            else:
+                users = load_users()
+                if entered_name in users:
+                    st.error("Username already taken. Please pick another one.")
+                else:
+                    users[entered_name] = entered_passcode
+                    save_users(users)
+                    st.success("Account created! You can now log in.")
+
+    is_logged_in = bool(st.session_state["logged_in_user"])
+    active_user_name = st.session_state["logged_in_user"] or ""
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 fixtures_df = load_matches(conn)
@@ -157,7 +222,7 @@ else:
                         prediction_rows.append(
                             {
                                 "submitted_at": now_utc.isoformat(),
-                                "user_name": user_name.strip(),
+                                "user_name": active_user_name,
                                 "match_id": match["match_id"],
                                 "home_team": match["home_team"],
                                 "away_team": match["away_team"],
