@@ -13,6 +13,7 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Atlanta United Prediction League", layout="wide")
 
 USERS_FILE = Path(__file__).with_name("users.json")
+SCHEDULE_FILE = Path(__file__).with_name("schedule.json")
 API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 MLS_LEAGUE_ID = 4346
 ATLANTA_TEAM_NAME = "Atlanta United"
@@ -76,9 +77,34 @@ def _as_int(value: object) -> Optional[int]:
 
 
 def load_mls_atlanta_fixtures() -> pd.DataFrame:
-    """Load upcoming MLS fixtures and retain only Atlanta United matches."""
-    url = f"{API_BASE_URL}/eventsnextleague.php"
-    params = {"id": MLS_LEAGUE_ID}
+    """Load the full Atlanta United MLS season schedule from API, with local fallback."""
+    url = f"{API_BASE_URL}/eventsseason.php"
+    params = {"id": MLS_LEAGUE_ID, "s": "2026"}
+
+    def fixture_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for fixture in events:
+            home_name = fixture.get("strHomeTeam")
+            away_name = fixture.get("strAwayTeam")
+            if ATLANTA_TEAM_NAME not in (home_name, away_name):
+                continue
+
+            kickoff_date = fixture.get("dateEvent")
+            kickoff_time = fixture.get("strTime")
+            kickoff_value = f"{kickoff_date} {kickoff_time}" if kickoff_time else kickoff_date
+
+            rows.append(
+                {
+                    "match_id": str(fixture.get("idEvent") or ""),
+                    "home_team": home_name,
+                    "away_team": away_name,
+                    "match_kickoff": parse_kickoff(kickoff_value),
+                    "final_home": _as_int(fixture.get("intHomeScore")),
+                    "final_away": _as_int(fixture.get("intAwayScore")),
+                }
+            )
+
+        return rows
 
     try:
         response = requests.get(url, params=params, timeout=20)
@@ -86,27 +112,18 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
         payload = response.json()
     except Exception as exc:
         st.error(f"Failed to fetch fixtures from TheSportsDB: {exc}")
-        return pd.DataFrame()
+        payload = {"events": []}
 
-    rows: list[dict[str, Any]] = []
-    for fixture in payload.get("events") or []:
-        home_name = fixture.get("strHomeTeam")
-        away_name = fixture.get("strAwayTeam")
-        if ATLANTA_TEAM_NAME not in (home_name, away_name):
-            continue
+    rows = fixture_rows(payload.get("events") or [])
 
-        kickoff_date = fixture.get("dateEvent")
-        kickoff_time = fixture.get("strTime")
-        kickoff_value = f"{kickoff_date} {kickoff_time}" if kickoff_time else kickoff_date
-
-        rows.append(
-            {
-                "match_id": str(fixture.get("idEvent")),
-                "home_team": home_name,
-                "away_team": away_name,
-                "match_kickoff": parse_kickoff(kickoff_value),
-            }
-        )
+    if not rows and SCHEDULE_FILE.exists():
+        try:
+            with SCHEDULE_FILE.open("r", encoding="utf-8") as infile:
+                local_events = json.load(infile)
+            if isinstance(local_events, list):
+                rows = fixture_rows(local_events)
+        except Exception as exc:
+            st.warning(f"Unable to read local fallback schedule.json: {exc}")
 
     fixtures_df = pd.DataFrame(rows)
     if fixtures_df.empty:
@@ -350,20 +367,45 @@ predictions_df = load_predictions(conn)
 matches_tab, leaderboard_tab, predictions_tab = st.tabs(["📅 Matches", "🏆 Leaderboard", "🔮 Predictions"])
 
 with matches_tab:
-    st.markdown("### 10 Most Recent Atlanta United Results")
-    if recent_results_df is None or recent_results_df.empty:
-        st.info("No completed Atlanta United matches are currently available.")
+    st.markdown("### 2026 Atlanta United Full Schedule")
+    if fixtures_df.empty:
+        st.info("No Atlanta United fixtures are currently available.")
     else:
-        matches_display = recent_results_df.copy()
-        matches_display["Final Score"] = (
-            matches_display["final_home"].astype("Int64").astype(str)
-            + " - "
-            + matches_display["final_away"].astype("Int64").astype(str)
+        matches_display = fixtures_df.sort_values("match_kickoff").copy()
+
+        if next_match is not None:
+            matches_display["is_next_match"] = matches_display["match_id"].astype(str).eq(str(next_match["match_id"]))
+        else:
+            matches_display["is_next_match"] = False
+
+        def match_status(row: pd.Series) -> str:
+            kickoff = row.get("match_kickoff")
+            final_home = row.get("final_home")
+            final_away = row.get("final_away")
+
+            if pd.notna(final_home) and pd.notna(final_away):
+                return f"{row['home_team']} {int(final_home)} - {int(final_away)} {row['away_team']}"
+
+            if pd.notna(kickoff):
+                kickoff_dt = pd.Timestamp(kickoff).to_pydatetime()
+                if kickoff_dt <= now_utc:
+                    return "Match completed (score pending)"
+                kickoff_str = kickoff_dt.strftime("%Y-%m-%d %H:%M UTC")
+                if bool(row.get("is_next_match")):
+                    return f"Kickoff: {kickoff_str} • Predictions Open"
+                return f"Kickoff: {kickoff_str}"
+
+            return "Kickoff TBD"
+
+        matches_display["Status"] = matches_display.apply(match_status, axis=1)
+        matches_display["Date (UTC)"] = matches_display["match_kickoff"].apply(
+            lambda dt: dt.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(dt) else "TBD"
         )
+
         st.dataframe(
-            matches_display[["home_team", "Final Score", "away_team"]].rename(
+            matches_display[["Date (UTC)", "home_team", "away_team", "Status"]].rename(
                 columns={"home_team": "Home Team", "away_team": "Away Team"}
-            ),
+            ).reset_index(drop=True),
             use_container_width=True,
             hide_index=True,
         )
