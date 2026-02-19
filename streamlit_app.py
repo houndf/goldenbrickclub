@@ -96,6 +96,25 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
     """Load the full Atlanta United MLS season schedule from API, with local fallback."""
     # Use TheSportsDB "events by season" endpoint to load the complete MLS schedule.
     url = f"{API_BASE_URL}/eventsseason.php?id={MLS_LEAGUE_ID}&s={MLS_SEASON}"
+    schedule_df = load_schedule_from_json()
+
+    def match_signature(home_team: Any, away_team: Any, kickoff: Optional[datetime]) -> tuple[str, str, str]:
+        kickoff_key = kickoff.isoformat() if kickoff is not None else ""
+        return (str(home_team or ""), str(away_team or ""), kickoff_key)
+
+    schedule_match_id_map: dict[str, str] = {}
+    schedule_signature_map: dict[tuple[str, str, str], str] = {}
+    if not schedule_df.empty and {"match_id", "home_team", "away_team", "match_kickoff"}.issubset(schedule_df.columns):
+        for _, scheduled_row in schedule_df.iterrows():
+            schedule_match_id = str(scheduled_row.get("match_id") or "")
+            schedule_match_id_map[schedule_match_id] = schedule_match_id
+            schedule_signature_map[
+                match_signature(
+                    scheduled_row.get("home_team"),
+                    scheduled_row.get("away_team"),
+                    parse_kickoff(scheduled_row.get("match_kickoff")),
+                )
+            ] = schedule_match_id
 
     def fixture_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -108,13 +127,17 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
             kickoff_date = fixture.get("dateEvent")
             kickoff_time = fixture.get("strTime")
             kickoff_value = f"{kickoff_date} {kickoff_time}" if kickoff_time else kickoff_date
+            kickoff_utc = parse_kickoff(kickoff_value)
+            api_match_id = str(fixture.get("idEvent") or "")
+            signature = match_signature(home_name, away_name, kickoff_utc)
+            resolved_match_id = schedule_match_id_map.get(api_match_id) or schedule_signature_map.get(signature) or api_match_id
 
             rows.append(
                 {
-                    "match_id": str(fixture.get("idEvent") or ""),
+                    "match_id": str(resolved_match_id),
                     "home_team": home_name,
                     "away_team": away_name,
-                    "match_kickoff": parse_kickoff(kickoff_value),
+                    "match_kickoff": kickoff_utc,
                     "final_home": _as_int(fixture.get("intHomeScore")),
                     "final_away": _as_int(fixture.get("intAwayScore")),
                 }
@@ -144,6 +167,8 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
     fixtures_df = pd.DataFrame(rows)
     if fixtures_df.empty:
         return fixtures_df
+
+    fixtures_df["match_id"] = fixtures_df["match_id"].astype(str)
 
     return fixtures_df.sort_values("match_kickoff").reset_index(drop=True)
 
@@ -273,6 +298,10 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None
         )
         predictions = predictions.loc[~mask].copy()
         updated = pd.concat([predictions, pd.DataFrame([row])], ignore_index=True)
+
+    updated["user_name"] = updated["user_name"].astype(str)
+    updated["match_id"] = updated["match_id"].astype(str)
+    updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
 
     save_predictions(conn, updated)
 
@@ -462,6 +491,8 @@ now_utc = datetime.now(timezone.utc)
 recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
+if not predictions_df.empty and "match_id" in predictions_df.columns:
+    predictions_df["match_id"] = predictions_df["match_id"].astype(str)
 
 match_segments = pd.DataFrame(columns=["match_id", "segment"])
 if not schedule_df.empty and {"match_id", "segment"}.issubset(schedule_df.columns):
