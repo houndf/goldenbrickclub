@@ -569,15 +569,13 @@ with st.sidebar:
 
         if st.session_state["logged_in_user"]:
             current_user_name = str(st.session_state["logged_in_user"])
-            current_user_type = "Member"
             current_user_extra_gold = False
             current_user_data = get_current_user_data()
             if current_user_data is not None:
-                current_user_type = str(current_user_data.get("user_type") or "Member")
                 current_user_extra_gold = _is_true(pd.to_numeric(current_user_data.get("extra_gold_status"), errors="coerce"))
 
             extra_gold_marker = " ✨" if current_user_extra_gold else ""
-            st.caption(f"Logged in as **{current_user_name}**{extra_gold_marker} [{current_user_type}].")
+            st.caption(f"Logged in as **{current_user_name}**{extra_gold_marker}.")
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
                 st.rerun()
