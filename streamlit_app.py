@@ -690,11 +690,11 @@ else:
                 )
 
 current_user_data = get_user_data(active_user_name)
-has_extra_gold_access = current_user_data is not None and _is_true(current_user_data.get("extra_gold_status"))
+current_user_extra_gold = current_user_data is not None and _is_true(current_user_data.get("extra_gold_status"))
 
 base_tabs = ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
 tabs_to_render = base_tabs.copy()
-if has_extra_gold_access:
+if current_user_extra_gold:
     tabs_to_render.insert(3, "✨ Extra Gold")
 
 tabs = st.tabs(tabs_to_render)
@@ -801,17 +801,20 @@ with matches_tab:
         )
 
 with leaderboard_tab:
-    if active_segment_label and not active_segment_standings.empty:
-        top_user = active_segment_standings.iloc[0]
-        bottom_user = active_segment_standings.iloc[-1]
-        st.markdown(
-            f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
-        )
-        st.markdown(
-            f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
-        )
+    if current_user_extra_gold:
+        if active_segment_label and not active_segment_standings.empty:
+            top_user = active_segment_standings.iloc[0]
+            bottom_user = active_segment_standings.iloc[-1]
+            st.markdown(
+                f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+            )
+            st.markdown(
+                f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+            )
+        else:
+            st.info("Segment trophies will appear once the active segment has completed matches.")
     else:
-        st.info("Segment trophies will appear once the active segment has completed matches.")
+        st.info("Trophy standings and segment awards are exclusive to Extra Gold members.")
 
     st.divider()
     st.markdown("### Season Standings")
@@ -1002,21 +1005,24 @@ with faq_tab:
         )
 
     with st.expander("🏆 Trophies & Segments"):
-        st.markdown(
-            """
-            To keep things interesting, the season is divided into **segments**:
+        if current_user_extra_gold:
+            st.markdown(
+                """
+                To keep things interesting, the season is divided into **segments**:
 
-            - **Segment 1:** Matches 1 and 2.
-            - **Following Segments:** Every 4 matches thereafter.
+                - **Segment 1:** Matches 1 and 2.
+                - **Following Segments:** Every 4 matches thereafter.
 
-            At the end of each segment, we crown two champions:
+                At the end of each segment, we crown two champions:
 
-            - **Gnomore Lossus Trophy:** For the person with the most points in that segment.
-            - **Wooden Spoon Trophy:** For the person at the bottom of the segment leaderboard.
+                - **Gnomore Lossus Trophy:** For the person with the most points in that segment.
+                - **Wooden Spoon Trophy:** For the person at the bottom of the segment leaderboard.
 
-            **Note:** Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
-            """
-        )
+                **Note:** Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
+                """
+            )
+        else:
+            st.markdown("Details on segment trophies and champions are exclusive to Extra Gold members.")
 
     with st.expander("🕒 Prediction Deadlines"):
         st.markdown(
