@@ -12,7 +12,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 from streamlit_gsheets.gsheets_connection import GSheetsServiceAccountClient
 
-st.set_page_config(page_title="Atlanta United Prediction League", layout="wide")
+st.set_page_config(page_title="Golden Brick Club - AUDFC Prediction League", layout="wide")
 
 SCHEDULE_FILE = Path(__file__).with_name("schedule.json")
 API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
