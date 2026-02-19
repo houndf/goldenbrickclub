@@ -459,12 +459,19 @@ st.caption("Live fixtures via TheSportsDB V1 API with auto-scoring in Google She
 with st.sidebar:
     st.header("User Access")
     st.session_state.setdefault("logged_in_user", None)
+    st.session_state.setdefault("login_name", "")
+    st.session_state.setdefault("login_passcode", "")
+    st.session_state.setdefault("show_logout_message", False)
 
     login_tab, signup_tab = st.tabs(["Login", "Sign Up"])
 
     with login_tab:
-        user_name = st.text_input("Name", placeholder="Your display name")
-        passcode = st.text_input("Passcode", type="password")
+        if st.session_state.get("show_logout_message"):
+            st.info("Logged out")
+            st.session_state["show_logout_message"] = False
+
+        user_name = st.text_input("Name", placeholder="Your display name", key="login_name")
+        passcode = st.text_input("Passcode", type="password", key="login_passcode")
         login_clicked = st.button("Log In", type="primary")
 
         if login_clicked:
@@ -482,7 +489,10 @@ with st.sidebar:
             st.caption(f"Logged in as **{st.session_state['logged_in_user']}**")
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
-                st.info("Logged out")
+                st.session_state["login_name"] = ""
+                st.session_state["login_passcode"] = ""
+                st.session_state["show_logout_message"] = True
+                st.rerun()
 
     with signup_tab:
         new_user_name = st.text_input("New username", key="signup_name")
