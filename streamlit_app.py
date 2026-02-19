@@ -453,8 +453,8 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
     return f"{days}d {hours}h {mins}m"
 
 
-st.title("⚽ Atlanta United MLS Prediction League")
-st.caption("Live fixtures via TheSportsDB V1 API with auto-scoring in Google Sheets.")
+st.title("⚽ Golden Brick Club")
+st.caption("Atlanta United MLS Prediction League")
 
 with st.sidebar:
     st.header("User Access")
