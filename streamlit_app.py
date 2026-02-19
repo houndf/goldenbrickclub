@@ -22,8 +22,15 @@ ATLANTA_TEAM_NAME = "Atlanta United"
 EASTERN_TZ = ZoneInfo("America/New_York")
 
 
-def load_users() -> dict[str, str]:
-    """Load users and passcodes from the users worksheet in Google Sheets."""
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    return normalized in {"true", "1", "yes", "y", "t"}
+
+
+def load_users() -> pd.DataFrame:
+    """Load users from the users worksheet in Google Sheets."""
     service_account_client = _build_service_account_client()
 
     try:
@@ -33,38 +40,42 @@ def load_users() -> dict[str, str]:
             conn = st.connection("gsheets", type=GSheetsConnection)
             users_df = conn.read(worksheet="users", ttl=0)
     except Exception:
-        return {}
+        return pd.DataFrame(columns=["user_name", "passcode", "user_type", "extra_gold_status"])
 
     if users_df is None or users_df.empty:
-        return {}
+        return pd.DataFrame(columns=["user_name", "passcode", "user_type", "extra_gold_status"])
 
     if "user_name" not in users_df.columns or "passcode" not in users_df.columns:
-        return {}
+        return pd.DataFrame(columns=["user_name", "passcode", "user_type", "extra_gold_status"])
 
-    users: dict[str, str] = {}
-    for _, row in users_df.iterrows():
-        name = str(row.get("user_name") or "").strip()
-        passcode = str(row.get("passcode") or "").strip()
-        if name:
-            users[name] = passcode
+    users = users_df.copy()
+    for col in ["user_type", "extra_gold_status"]:
+        if col not in users.columns:
+            users[col] = pd.NA
 
-    return users
+    users["user_name"] = users["user_name"].fillna("").astype(str).str.strip()
+    users["passcode"] = users["passcode"].fillna("").astype(str).str.strip()
+    users["user_type"] = users["user_type"].fillna("Member").astype(str).str.strip()
+    users["extra_gold_status"] = users["extra_gold_status"].apply(_as_bool)
+    users = users[users["user_name"].ne("")].copy().reset_index(drop=True)
+    return users[["user_name", "passcode", "user_type", "extra_gold_status"]]
 
 
-def save_users(users: dict[str, str]) -> None:
-    """Persist users and passcodes to the users worksheet in Google Sheets."""
-    users_df = pd.DataFrame(
-        [{"user_name": str(name), "passcode": str(passcode)} for name, passcode in users.items()],
-        columns=["user_name", "passcode"],
-    )
+def save_users(users_df: pd.DataFrame) -> None:
+    """Persist users to the users worksheet in Google Sheets."""
+    save_df = users_df.copy()
+    for col in ["user_type", "extra_gold_status"]:
+        if col not in save_df.columns:
+            save_df[col] = pd.NA
+    save_df = save_df[["user_name", "passcode", "user_type", "extra_gold_status"]]
 
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
-        service_account_client.update(worksheet="users", data=users_df)
+        service_account_client.update(worksheet="users", data=save_df)
         return
 
     conn = st.connection("gsheets", type=GSheetsConnection)
-    conn.update(worksheet="users", data=users_df)
+    conn.update(worksheet="users", data=save_df)
 
 
 def calculate_points(
@@ -456,6 +467,8 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 st.title("⚽ Golden Brick Club")
 st.caption("Atlanta United MLS Prediction League")
 
+users_df = load_users()
+
 with st.sidebar:
     st.header("User Access")
     st.session_state.setdefault("logged_in_user", None)
@@ -475,18 +488,31 @@ with st.sidebar:
         login_clicked = st.button("Log In", type="primary")
 
         if login_clicked:
-            users = load_users()
             entered_name = user_name.strip()
             entered_passcode = passcode.strip()
+            matching_user = users_df[users_df["user_name"] == entered_name]
 
-            if users.get(entered_name) == entered_passcode and entered_name:
+            if (
+                entered_name
+                and not matching_user.empty
+                and str(matching_user.iloc[0].get("passcode") or "").strip() == entered_passcode
+            ):
                 st.session_state["logged_in_user"] = entered_name
                 st.success("Logged in")
             else:
                 st.error("Invalid name or passcode")
 
         if st.session_state["logged_in_user"]:
-            st.caption(f"Logged in as **{st.session_state['logged_in_user']}**")
+            active_sidebar_user = users_df[users_df["user_name"] == st.session_state["logged_in_user"]]
+            user_type_label = "Member"
+            extra_gold_badge = ""
+            if not active_sidebar_user.empty:
+                user_type_label = str(active_sidebar_user.iloc[0].get("user_type") or "Member")
+                if bool(active_sidebar_user.iloc[0].get("extra_gold_status")):
+                    extra_gold_badge = " ✨"
+            st.caption(
+                f"Logged in as **{st.session_state['logged_in_user']} [{user_type_label}]**{extra_gold_badge}"
+            )
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
                 st.rerun()
@@ -503,12 +529,21 @@ with st.sidebar:
             if not entered_name or not entered_passcode:
                 st.error("Please enter both a username and passcode.")
             else:
-                users = load_users()
-                if entered_name in users:
+                if entered_name in users_df["user_name"].values:
                     st.error("Username already taken. Please pick another one.")
                 else:
-                    users[entered_name] = entered_passcode
-                    save_users(users)
+                    new_user_row = pd.DataFrame(
+                        [
+                            {
+                                "user_name": entered_name,
+                                "passcode": entered_passcode,
+                                "user_type": "Member",
+                                "extra_gold_status": False,
+                            }
+                        ]
+                    )
+                    users_df = pd.concat([users_df, new_user_row], ignore_index=True)
+                    save_users(users_df)
                     st.success("Account created! You can now log in.")
 
     is_logged_in = bool(st.session_state["logged_in_user"])
@@ -593,8 +628,16 @@ else:
                     columns={"user_name": "User", "points_earned": "Segment Points"}
                 )
 
-home_tab, matches_tab, leaderboard_tab, predictions_tab, faq_tab = st.tabs(
-    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
+
+extra_gold_standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
+if not standings.empty and not users_df.empty and "user_name" in users_df.columns:
+    extra_gold_users = users_df[users_df["extra_gold_status"] == True][["user_name"]].copy()
+    if not extra_gold_users.empty:
+        extra_gold_standings = standings.merge(extra_gold_users, left_on="User", right_on="user_name", how="inner")
+        extra_gold_standings = extra_gold_standings[["Rank", "User", "Total Points"]].reset_index(drop=True)
+
+home_tab, matches_tab, leaderboard_tab, extra_gold_tab, predictions_tab, faq_tab = st.tabs(
+    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "✨ Extra Gold", "🔮 Predictions", "❓ FAQ"]
 )
 
 with home_tab:
@@ -722,6 +765,13 @@ with leaderboard_tab:
             use_container_width=True,
             hide_index=True,
         )
+
+with extra_gold_tab:
+    st.markdown("### The Gilded Leaderboard")
+    if extra_gold_standings.empty:
+        st.info("No Extra Gold members with leaderboard points yet.")
+    else:
+        st.dataframe(extra_gold_standings, use_container_width=True, hide_index=True)
 
 with predictions_tab:
     if next_match is not None:
