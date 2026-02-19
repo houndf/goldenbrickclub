@@ -246,6 +246,7 @@ def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
 
 def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None:
     predictions = load_predictions(conn)
+    row_match_id = str(row["match_id"])
 
     if predictions.empty:
         updated = pd.DataFrame([row])
@@ -267,9 +268,8 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None
             if col not in predictions.columns:
                 predictions[col] = pd.NA
 
-        mask = (
-            predictions["user_name"].astype(str).eq(str(row["user_name"]))
-            & predictions["match_id"].astype(str).eq(str(row["match_id"]))
+        mask = (predictions["user_name"].astype(str) == str(row["user_name"])) & (
+            predictions["match_id"].astype(str) == row_match_id
         )
         predictions = predictions.loc[~mask].copy()
         updated = pd.concat([predictions, pd.DataFrame([row])], ignore_index=True)
@@ -683,6 +683,21 @@ with predictions_tab:
     elif next_match is None:
         st.info("No match currently open for prediction.")
     else:
+        existing_home = 0
+        existing_away = 0
+        if not predictions_df.empty and {"user_name", "match_id", "pred_home", "pred_away"}.issubset(predictions_df.columns):
+            existing_prediction_mask = (
+                predictions_df["user_name"].astype(str) == str(active_user_name)
+            ) & (predictions_df["match_id"].astype(str) == str(next_match["match_id"]))
+            existing_prediction = predictions_df.loc[existing_prediction_mask]
+            if not existing_prediction.empty:
+                existing_home_value = pd.to_numeric(existing_prediction.iloc[-1].get("pred_home"), errors="coerce")
+                existing_away_value = pd.to_numeric(existing_prediction.iloc[-1].get("pred_away"), errors="coerce")
+                if pd.notna(existing_home_value):
+                    existing_home = int(existing_home_value)
+                if pd.notna(existing_away_value):
+                    existing_away = int(existing_away_value)
+
         with st.form("prediction_form", clear_on_submit=False):
             st.subheader("Prediction Window: Next Atlanta United Match Only")
             st.write(
@@ -696,6 +711,7 @@ with predictions_tab:
                 min_value=0,
                 max_value=15,
                 step=1,
+                value=existing_home,
                 key=f"home_{next_match['match_id']}",
             )
             pred_away = col2.number_input(
@@ -703,6 +719,7 @@ with predictions_tab:
                 min_value=0,
                 max_value=15,
                 step=1,
+                value=existing_away,
                 key=f"away_{next_match['match_id']}",
             )
 
