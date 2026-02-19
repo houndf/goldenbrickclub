@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
+from streamlit_gsheets.gsheets_connection import GSheetsServiceAccountClient
 
 st.set_page_config(page_title="Atlanta United Prediction League", layout="wide")
 
@@ -191,8 +192,12 @@ def load_schedule_from_json() -> pd.DataFrame:
 
 
 def load_predictions(conn: GSheetsConnection) -> pd.DataFrame:
+    service_account_client = _build_service_account_client()
     try:
-        predictions = conn.read(worksheet="predictions", ttl=0)
+        if service_account_client is not None:
+            predictions = service_account_client.read(worksheet="predictions", ttl=0)
+        else:
+            predictions = conn.read(worksheet="predictions", ttl=0)
         if predictions is None:
             return pd.DataFrame()
         return predictions
@@ -201,7 +206,42 @@ def load_predictions(conn: GSheetsConnection) -> pd.DataFrame:
 
 
 def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None:
+    service_account_client = _build_service_account_client()
+    if service_account_client is not None:
+        service_account_client.update(worksheet="predictions", data=predictions)
+        return
     conn.update(worksheet="predictions", data=predictions)
+
+
+def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
+    try:
+        has_service_account = "gcp_service_account" in st.secrets
+    except Exception:
+        return None
+
+    if not has_service_account:
+        return None
+
+    service_account_secrets = dict(st.secrets["gcp_service_account"])
+    if not service_account_secrets:
+        return None
+
+    merged_secrets: dict[str, Any] = {"type": "service_account", **service_account_secrets}
+
+    connection_settings: dict[str, Any] = {}
+    if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        connection_settings = dict(st.secrets["connections"]["gsheets"])
+    elif "gsheets" in st.secrets:
+        connection_settings = dict(st.secrets["gsheets"])
+
+    for key in ("spreadsheet", "url", "worksheet"):
+        if key in connection_settings and key not in merged_secrets:
+            merged_secrets[key] = connection_settings[key]
+
+    try:
+        return GSheetsServiceAccountClient(merged_secrets)
+    except Exception:
+        return None
 
 
 def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None:
@@ -433,9 +473,8 @@ if not match_segments.empty:
 
 if predictions_df.empty or "user_name" not in predictions_df.columns:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
-    current_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
-    latest_segment_id: Optional[str] = None
-    latest_segment_in_progress = False
+    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+    active_segment_label: Optional[str] = None
 else:
     leaderboard = predictions_df.copy()
     for col in ["points_earned", "final_home", "final_away", "match_id"]:
@@ -462,34 +501,34 @@ else:
     completed_rows = leaderboard[leaderboard["final_home"].notna() & leaderboard["final_away"].notna()].copy()
     completed_match_ids = set(completed_rows["match_id"].dropna().astype(str).tolist())
 
-    latest_segment_id = None
-    latest_segment_in_progress = False
-    current_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+    active_segment_label = None
+    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
 
-    if completed_match_ids and not match_segments.empty:
-        completed_segments = match_segments[match_segments["match_id"].isin(completed_match_ids)].copy()
-        if not completed_segments.empty:
-            latest_match_index = completed_segments.index.max()
-            latest_segment = completed_segments.loc[latest_match_index, "segment"]
-            latest_segment_id = f"Segment {int(latest_segment)}" if pd.notna(latest_segment) else None
+    if not match_segments.empty:
+        active_segment = pd.NA
+        for segment_value in sorted(match_segments["segment"].dropna().unique()):
+            segment_match_ids = set(match_segments[match_segments["segment"] == segment_value]["match_id"].tolist())
+            if segment_match_ids - completed_match_ids:
+                active_segment = segment_value
+                break
 
-            segment_match_ids: set[str] = set()
-            if pd.notna(latest_segment):
-                segment_match_ids = set(
-                    match_segments[match_segments["segment"] == latest_segment]["match_id"].tolist()
-                )
-                latest_segment_in_progress = bool(segment_match_ids - completed_match_ids)
+        if pd.isna(active_segment):
+            all_segment_values = sorted(match_segments["segment"].dropna().unique())
+            if all_segment_values:
+                active_segment = all_segment_values[-1]
 
-            scored_segment_rows = completed_rows[completed_rows["match_id"].isin(segment_match_ids)].copy()
+        if pd.notna(active_segment):
+            active_segment_label = f"Segment {int(active_segment)}"
+            scored_segment_rows = completed_rows[completed_rows["segment"] == active_segment].copy()
             if not scored_segment_rows.empty:
-                current_segment_standings = (
+                active_segment_standings = (
                     scored_segment_rows.groupby("user_name", dropna=True, as_index=False)["points_earned"]
                     .sum()
                     .sort_values("points_earned", ascending=False)
                     .reset_index(drop=True)
                 )
-                current_segment_standings["Rank"] = current_segment_standings.index + 1
-                current_segment_standings = current_segment_standings.rename(
+                active_segment_standings["Rank"] = active_segment_standings.index + 1
+                active_segment_standings = active_segment_standings.rename(
                     columns={"user_name": "User", "points_earned": "Segment Points"}
                 )
 
@@ -591,25 +630,17 @@ with matches_tab:
         )
 
 with leaderboard_tab:
-    if latest_segment_id and not current_segment_standings.empty:
-        top_user = current_segment_standings.iloc[0]
-        bottom_user = current_segment_standings.iloc[-1]
-        if latest_segment_in_progress:
-            st.markdown(
-                f"### {latest_segment_id}: 🟢 Current Leader — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
-            )
-            st.markdown(
-                f"### {latest_segment_id}: 🔻 Current Tail-ender — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
-            )
-        else:
-            st.markdown(
-                f"### {latest_segment_id} Trophy Holders: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
-            )
-            st.markdown(
-                f"### {latest_segment_id} Trophy Holders: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
-            )
+    if active_segment_label and not active_segment_standings.empty:
+        top_user = active_segment_standings.iloc[0]
+        bottom_user = active_segment_standings.iloc[-1]
+        st.markdown(
+            f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+        )
+        st.markdown(
+            f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+        )
     else:
-        st.info("Segment trophies will appear once a segment has a completed match.")
+        st.info("Segment trophies will appear once the active segment has completed matches.")
 
     st.divider()
     st.markdown("### Season Standings")
@@ -618,12 +649,15 @@ with leaderboard_tab:
     else:
         st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
-    st.markdown("### Current Segment Standings")
-    if current_segment_standings.empty:
-        st.info("No completed-match points are available for the current segment yet.")
+    segment_table_header = "### Segment Standings"
+    if active_segment_label:
+        segment_table_header = f"### Segment Standings ({active_segment_label})"
+    st.markdown(segment_table_header)
+    if active_segment_standings.empty:
+        st.info("No completed-match points are available for the active segment yet.")
     else:
         st.dataframe(
-            current_segment_standings[["Rank", "User", "Segment Points"]],
+            active_segment_standings[["Rank", "User", "Segment Points"]],
             use_container_width=True,
             hide_index=True,
         )
