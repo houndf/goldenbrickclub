@@ -489,9 +489,6 @@ with st.sidebar:
             st.caption(f"Logged in as **{st.session_state['logged_in_user']}**")
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
-                st.session_state["login_name"] = ""
-                st.session_state["login_passcode"] = ""
-                st.session_state["show_logout_message"] = True
                 st.rerun()
 
     with signup_tab:
