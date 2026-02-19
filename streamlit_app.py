@@ -548,7 +548,12 @@ with st.sidebar:
             st.session_state["show_logout_message"] = False
 
         user_name = st.text_input("Name", placeholder="Your display name", key="login_name")
-        passcode = st.text_input("Passcode", type="password", key="login_passcode")
+        passcode = st.text_input(
+            "Passcode",
+            type="password",
+            key="login_passcode",
+            help="Do not use your typical password",
+        )
         login_clicked = st.button("Log In", type="primary")
 
         if login_clicked:
@@ -572,14 +577,19 @@ with st.sidebar:
                 current_user_extra_gold = _is_true(current_user_data.get("extra_gold_status"))
 
             extra_gold_marker = " ✨" if current_user_extra_gold else ""
-            st.caption(f"Logged in as **{current_user_name}**{extra_gold_marker} [{current_user_type}]")
+            st.caption(f"Logged in as **{current_user_name}**{extra_gold_marker} [{current_user_type}].")
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
                 st.rerun()
 
     with signup_tab:
         new_user_name = st.text_input("New username", key="signup_name")
-        new_passcode = st.text_input("New passcode", type="password", key="signup_pass")
+        new_passcode = st.text_input(
+            "New passcode",
+            type="password",
+            key="signup_pass",
+            help="Do not use your typical password",
+        )
         create_account_clicked = st.button("Create Account")
 
         if create_account_clicked:
@@ -681,7 +691,6 @@ else:
 
 current_user_data = get_user_data(active_user_name)
 has_extra_gold_access = current_user_data is not None and _is_true(current_user_data.get("extra_gold_status"))
-st.sidebar.write(f"DEBUG extra_gold_status: {None if current_user_data is None else current_user_data.get('extra_gold_status')}")
 
 base_tabs = ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
 tabs_to_render = base_tabs.copy()
@@ -830,25 +839,56 @@ if extra_gold_tab is not None:
         if users_df.empty or "user_name" not in users_df.columns:
             st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
         else:
-            extra_gold_users_df = load_users_full()
-            if extra_gold_users_df.empty or "user_name" not in extra_gold_users_df.columns:
-                st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
-            else:
-                users_lookup = extra_gold_users_df[["user_name"]].copy()
-                users_lookup["extra_gold_status"] = (
-                    extra_gold_users_df["extra_gold_status"]
-                    if "extra_gold_status" in extra_gold_users_df.columns
-                    else False
+            users_lookup = users_df[["user_name"]].copy()
+            users_lookup["extra_gold_status"] = (
+                users_df["extra_gold_status"] if "extra_gold_status" in users_df.columns else False
+            )
+            users_lookup["extra_gold_status"] = users_lookup["extra_gold_status"].apply(_is_true)
+
+            gold_users = set(users_lookup[users_lookup["extra_gold_status"]]["user_name"].astype(str).tolist())
+            gold_standings = standings[standings["User"].astype(str).isin(gold_users)].copy().reset_index(drop=True)
+            gold_segment_standings = (
+                active_segment_standings[active_segment_standings["User"].astype(str).isin(gold_users)]
+                .copy()
+                .reset_index(drop=True)
+            )
+
+            if not gold_standings.empty:
+                gold_standings["Rank"] = gold_standings.index + 1
+            if not gold_segment_standings.empty:
+                gold_segment_standings["Rank"] = gold_segment_standings.index + 1
+
+            if active_segment_label and not gold_segment_standings.empty:
+                top_user = gold_segment_standings.iloc[0]
+                bottom_user = gold_segment_standings.iloc[-1]
+                st.markdown(
+                    f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
                 )
-                users_lookup["extra_gold_status"] = users_lookup["extra_gold_status"].apply(_is_true)
+                st.markdown(
+                    f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+                )
+            else:
+                st.info("Segment trophies will appear once the active segment has completed matches.")
 
-                gold_users = users_lookup[users_lookup["extra_gold_status"]]["user_name"].astype(str).tolist()
-                gold_standings = standings[standings["User"].astype(str).isin(gold_users)].copy()
+            st.divider()
+            st.markdown("### Season Standings")
+            if gold_standings.empty:
+                st.info("No Extra Gold member points are available for season standings yet.")
+            else:
+                st.dataframe(gold_standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
-                if gold_standings.empty:
-                    st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
-                else:
-                    st.dataframe(gold_standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
+            segment_table_header = "### Segment Standings"
+            if active_segment_label:
+                segment_table_header = f"### Segment Standings ({active_segment_label})"
+            st.markdown(segment_table_header)
+            if gold_segment_standings.empty:
+                st.info("No completed-match points are available for the active segment yet.")
+            else:
+                st.dataframe(
+                    gold_segment_standings[["Rank", "User", "Segment Points"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 with predictions_tab:
     if next_match is not None:
