@@ -14,7 +14,6 @@ from streamlit_gsheets.gsheets_connection import GSheetsServiceAccountClient
 
 st.set_page_config(page_title="Atlanta United Prediction League", layout="wide")
 
-USERS_FILE = Path(__file__).with_name("users.json")
 SCHEDULE_FILE = Path(__file__).with_name("schedule.json")
 API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 MLS_LEAGUE_ID = 4346
@@ -24,23 +23,48 @@ EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 def load_users() -> dict[str, str]:
-    """Load users and passcodes from the local JSON file."""
-    if not USERS_FILE.exists():
+    """Load users and passcodes from the users worksheet in Google Sheets."""
+    service_account_client = _build_service_account_client()
+
+    try:
+        if service_account_client is not None:
+            users_df = service_account_client.read(worksheet="users", ttl=0)
+        else:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            users_df = conn.read(worksheet="users", ttl=0)
+    except Exception:
         return {}
 
-    with USERS_FILE.open("r", encoding="utf-8") as infile:
-        users = json.load(infile)
+    if users_df is None or users_df.empty:
+        return {}
 
-    if isinstance(users, dict):
-        return {str(name): str(passcode) for name, passcode in users.items()}
+    if "user_name" not in users_df.columns or "passcode" not in users_df.columns:
+        return {}
 
-    return {}
+    users: dict[str, str] = {}
+    for _, row in users_df.iterrows():
+        name = str(row.get("user_name") or "").strip()
+        passcode = str(row.get("passcode") or "").strip()
+        if name:
+            users[name] = passcode
+
+    return users
 
 
 def save_users(users: dict[str, str]) -> None:
-    """Persist users and passcodes to disk."""
-    with USERS_FILE.open("w", encoding="utf-8") as outfile:
-        json.dump(users, outfile, indent=2)
+    """Persist users and passcodes to the users worksheet in Google Sheets."""
+    users_df = pd.DataFrame(
+        [{"user_name": str(name), "passcode": str(passcode)} for name, passcode in users.items()],
+        columns=["user_name", "passcode"],
+    )
+
+    service_account_client = _build_service_account_client()
+    if service_account_client is not None:
+        service_account_client.update(worksheet="users", data=users_df)
+        return
+
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    conn.update(worksheet="users", data=users_df)
 
 
 def calculate_points(
