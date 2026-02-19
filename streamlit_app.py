@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -316,19 +316,18 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
     if with_kickoff.empty:
         return None, "No fixture kickoff timestamps are available."
 
-    today = now_utc.date()
-    if "status_short" in with_kickoff.columns:
-        today_matches = with_kickoff[with_kickoff["match_kickoff"].dt.date == today]
-        unresolved_today = today_matches[~today_matches["status_short"].astype(str).eq("FT")]
-
-        if not unresolved_today.empty:
-            current_match = unresolved_today.sort_values("match_kickoff").iloc[0]
-            status_long = current_match.get("status_long") or "In progress"
-            return (
-                None,
-                f"Predictions are locked until today's match is final (FT): "
-                f"{current_match['home_team']} vs {current_match['away_team']} ({status_long}).",
-            )
+    now_et = now_utc.astimezone(EASTERN_TZ)
+    today_et = now_et.date()
+    today_matches = with_kickoff[with_kickoff["match_kickoff"].dt.tz_convert(EASTERN_TZ).dt.date == today_et]
+    if not today_matches.empty:
+        current_match = today_matches.sort_values("match_kickoff").iloc[0]
+        prediction_deadline = current_match["match_kickoff"] + timedelta(minutes=15)
+        if now_utc <= prediction_deadline:
+            return current_match, None
+        return (
+            None,
+            "Predictions for today's match are now closed. Come back tomorrow to predict the next game!",
+        )
 
     upcoming = with_kickoff[with_kickoff["match_kickoff"] > now_utc]
     if upcoming.empty:
@@ -757,8 +756,8 @@ with predictions_tab:
             submitted = st.form_submit_button("Save Prediction")
 
         if submitted:
-            if now_utc >= next_match["match_kickoff"]:
-                st.error("Predictions are closed for this match (kickoff has passed).")
+            if now_utc > next_match["match_kickoff"] + timedelta(minutes=15):
+                st.error("Predictions are closed for this match (15-minute grace period has passed).")
             else:
                 row = {
                     "submitted_at": now_utc.isoformat(),
