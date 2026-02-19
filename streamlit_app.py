@@ -76,20 +76,25 @@ def load_users_sheet() -> pd.DataFrame:
 
 
 def _is_true(value: object) -> bool:
-    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+    return str(value).strip().lower() in {"true", "1", "1.0", "yes"}
 
 
 def get_current_user_data() -> pd.Series | None:
     """Return the full users-sheet row for the logged-in user, if present."""
     logged_in_user = st.session_state.get("logged_in_user")
-    if not logged_in_user:
+    return get_user_data(logged_in_user)
+
+
+def get_user_data(user_name: object) -> pd.Series | None:
+    """Return the full users-sheet row for a specific user, if present."""
+    if not user_name:
         return None
 
     users_df = load_users_full()
     if users_df.empty or "user_name" not in users_df.columns:
         return None
 
-    current_user_row = users_df[users_df["user_name"].astype(str) == str(logged_in_user)]
+    current_user_row = users_df[users_df["user_name"].astype(str) == str(user_name)]
     if current_user_row.empty:
         return None
 
@@ -98,10 +103,10 @@ def get_current_user_data() -> pd.Series | None:
 
 def save_users(users: dict[str, str]) -> None:
     """Persist users and passcodes to the users worksheet in Google Sheets."""
+    required_headers = ["user_name", "passcode", "user_type", "extra_gold_status"]
     users_df = load_users_full()
-
     if users_df.empty:
-        users_df = pd.DataFrame(columns=["user_name", "passcode", "user_type", "extra_gold_status"])
+        users_df = pd.DataFrame(columns=required_headers)
 
     existing_user_names = set(users_df["user_name"].astype(str).tolist()) if "user_name" in users_df.columns else set()
 
@@ -122,9 +127,12 @@ def save_users(users: dict[str, str]) -> None:
         new_row["user_name"] = name_str
         new_row["passcode"] = passcode_str
         new_row["user_type"] = "default"
-        new_row["extra_gold_status"] = "FALSE"
+        new_row["extra_gold_status"] = 0
         users_df = pd.concat([users_df, pd.DataFrame([new_row])], ignore_index=True)
         existing_user_names.add(name_str)
+
+    users_df = users_df.reindex(columns=required_headers)
+    users_df["extra_gold_status"] = pd.to_numeric(users_df["extra_gold_status"], errors="coerce").fillna(0).astype(int)
 
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
@@ -671,8 +679,9 @@ else:
                     columns={"user_name": "User", "points_earned": "Segment Points"}
                 )
 
-current_user_data = get_current_user_data()
+current_user_data = get_user_data(active_user_name)
 has_extra_gold_access = current_user_data is not None and _is_true(current_user_data.get("extra_gold_status"))
+st.sidebar.write(f"DEBUG extra_gold_status: {None if current_user_data is None else current_user_data.get('extra_gold_status')}")
 
 base_tabs = ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
 tabs_to_render = base_tabs.copy()
