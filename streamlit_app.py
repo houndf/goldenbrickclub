@@ -1021,6 +1021,7 @@ with faq_tab:
                 Gnomore Lossus Trophy: For the person with the most points in that segment.
 
                 Wooden Spoon Trophy: For the person at the bottom of the segment leaderboard.
+                
                 Note: Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
                 """
             )
@@ -1032,6 +1033,7 @@ with faq_tab:
                 Segment 1: Matches 1 and 2.
 
                 Following Segments: Every 4 matches thereafter.
+                
                 Note: Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
                 """
             )
