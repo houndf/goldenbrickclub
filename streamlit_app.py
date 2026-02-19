@@ -51,6 +51,29 @@ def load_users() -> dict[str, str]:
     return users
 
 
+def load_users_sheet() -> pd.DataFrame:
+    """Load user metadata from the users worksheet."""
+    service_account_client = _build_service_account_client()
+
+    try:
+        if service_account_client is not None:
+            users_df = service_account_client.read(worksheet="users", ttl=0)
+        else:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            users_df = conn.read(worksheet="users", ttl=0)
+    except Exception:
+        return pd.DataFrame()
+
+    if users_df is None:
+        return pd.DataFrame()
+
+    return users_df
+
+
+def _is_true(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
 def save_users(users: dict[str, str]) -> None:
     """Persist users and passcodes to the users worksheet in Google Sheets."""
     users_df = pd.DataFrame(
@@ -455,6 +478,7 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 
 st.title("⚽ Golden Brick Club")
 st.caption("Atlanta United MLS Prediction League")
+users_df = load_users_sheet()
 
 with st.sidebar:
     st.header("User Access")
@@ -486,7 +510,17 @@ with st.sidebar:
                 st.error("Invalid name or passcode")
 
         if st.session_state["logged_in_user"]:
-            st.caption(f"Logged in as **{st.session_state['logged_in_user']}**")
+            current_user_name = str(st.session_state["logged_in_user"])
+            current_user_type = "Member"
+            current_user_extra_gold = False
+            if not users_df.empty and "user_name" in users_df.columns:
+                current_user_row = users_df[users_df["user_name"].astype(str) == current_user_name]
+                if not current_user_row.empty:
+                    current_user_type = str(current_user_row.iloc[0].get("user_type") or "Member")
+                    current_user_extra_gold = _is_true(current_user_row.iloc[0].get("extra_gold_status"))
+
+            extra_gold_marker = " ✨" if current_user_extra_gold else ""
+            st.caption(f"Logged in as **{current_user_name}**{extra_gold_marker} [{current_user_type}]")
             if st.button("Log Out"):
                 st.session_state["logged_in_user"] = None
                 st.rerun()
@@ -593,8 +627,8 @@ else:
                     columns={"user_name": "User", "points_earned": "Segment Points"}
                 )
 
-home_tab, matches_tab, leaderboard_tab, predictions_tab, faq_tab = st.tabs(
-    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
+home_tab, matches_tab, leaderboard_tab, extra_gold_tab, predictions_tab, faq_tab = st.tabs(
+    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "✨ Extra Gold", "🔮 Predictions", "❓ FAQ"]
 )
 
 with home_tab:
@@ -722,6 +756,29 @@ with leaderboard_tab:
             use_container_width=True,
             hide_index=True,
         )
+
+with extra_gold_tab:
+    st.markdown("### ✨ Extra Gold Members")
+    if users_df.empty or "user_name" not in users_df.columns:
+        st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
+    else:
+        extra_gold_users_df = load_users_sheet()
+        if extra_gold_users_df.empty or "user_name" not in extra_gold_users_df.columns:
+            st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
+        else:
+            users_lookup = extra_gold_users_df[["user_name"]].copy()
+            users_lookup["extra_gold_status"] = (
+                extra_gold_users_df["extra_gold_status"] if "extra_gold_status" in extra_gold_users_df.columns else False
+            )
+            users_lookup["extra_gold_status"] = users_lookup["extra_gold_status"].apply(_is_true)
+
+            gold_users = users_lookup[users_lookup["extra_gold_status"]]["user_name"].astype(str).tolist()
+            gold_standings = standings[standings["User"].astype(str).isin(gold_users)].copy()
+
+            if gold_standings.empty:
+                st.info("Only Extra Gold members are listed here. Level up your status to join the club!")
+            else:
+                st.dataframe(gold_standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
 with predictions_tab:
     if next_match is not None:
