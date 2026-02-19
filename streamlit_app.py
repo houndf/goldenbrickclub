@@ -562,8 +562,8 @@ else:
                     columns={"user_name": "User", "points_earned": "Segment Points"}
                 )
 
-home_tab, matches_tab, leaderboard_tab, predictions_tab = st.tabs(
-    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions"]
+home_tab, matches_tab, leaderboard_tab, predictions_tab, faq_tab = st.tabs(
+    ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
 )
 
 with home_tab:
@@ -786,3 +786,52 @@ with predictions_tab:
 - -1 point: incorrect result (W/D/L) and neither score matches""",
         language="text",
     )
+
+with faq_tab:
+    st.markdown("### ❓ FAQ")
+
+    with st.expander("⚽ Scoring Rules", expanded=True):
+        st.markdown(
+            """
+            We use a **Precision Scaling** system to reward the best gurus and penalize the wild guesses:
+
+            - **3 Points (The Bullseye):** You got the exact score right (e.g., you predicted 2-1 and it ended 2-1).
+            - **2 Points (The Close Call):** You got the winner right **and** you nailed one team's score (e.g., you predicted 2-0 and it ended 2-1).
+            - **1 Point (The Result):** You correctly picked the winner or a draw, but both scores were off.
+            - **0 Points (The Silver Lining):** You got the winner/loser wrong, but you at least got one team's score right.
+            - **-1 Point (The Wooden Spoon Effort):** You got the winner wrong **and** both scores wrong. Ouch.
+            """
+        )
+
+    with st.expander("🏆 Trophies & Segments"):
+        st.markdown(
+            """
+            To keep things interesting, the season is divided into **segments**:
+
+            - **Segment 1:** Matches 1 and 2.
+            - **Following Segments:** Every 4 matches thereafter.
+
+            At the end of each segment, we crown two champions:
+
+            - **Gnomore Lossus Trophy:** For the person with the most points in that segment.
+            - **Wooden Spoon Trophy:** For the person at the bottom of the segment leaderboard.
+
+            **Note:** Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
+            """
+        )
+
+    with st.expander("🕒 Prediction Deadlines"):
+        st.markdown(
+            """
+            - **Lockout:** Predictions lock 15 minutes after kickoff.
+            - **Next Game Window:** The prediction window for the next match opens the day after the current match ends.
+            """
+        )
+
+    with st.expander("💾 Persistence"):
+        st.markdown(
+            """
+            You can change your prediction as many times as you want before lockout.
+            The app only keeps your **latest** saved guess for that match.
+            """
+        )
