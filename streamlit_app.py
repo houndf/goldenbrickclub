@@ -371,9 +371,10 @@ def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
         return None
 
 
-def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None:
+def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool:
     predictions = load_predictions(conn)
     row_match_id = str(row["match_id"])
+    original_row_count = len(predictions)
 
     if predictions.empty:
         updated = pd.DataFrame([row])
@@ -395,17 +396,25 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> None
             if col not in predictions.columns:
                 predictions[col] = pd.NA
 
-        mask = (predictions["user_name"].astype(str) == str(row["user_name"])) & (
-            predictions["match_id"].astype(str) == row_match_id
+        predictions["user_name"] = predictions["user_name"].astype(str)
+        predictions["match_id"] = predictions["match_id"].astype(str)
+
+        existing_row_mask = (predictions["user_name"] == str(row["user_name"])) & (
+            predictions["match_id"] == row_match_id
         )
-        predictions = predictions.loc[~mask].copy()
-        updated = pd.concat([predictions, pd.DataFrame([row])], ignore_index=True)
+        filtered_predictions = predictions.loc[~existing_row_mask].copy()
+        updated = pd.concat([filtered_predictions, pd.DataFrame([row])], ignore_index=True)
 
     updated["user_name"] = updated["user_name"].astype(str)
     updated["match_id"] = updated["match_id"].astype(str)
     updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
 
+    if original_row_count > 5 and len(updated) <= 1:
+        st.error("Sync error: Predicted data mismatch. Please try saving again.")
+        return False
+
     save_predictions(conn, updated)
+    return True
 
 
 def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tuple[Optional[pd.Series], Optional[str]]:
@@ -946,6 +955,10 @@ with predictions_tab:
                 if pd.notna(existing_away_value):
                     existing_away = int(existing_away_value)
 
+        save_lock_key = "prediction_save_locked"
+        if save_lock_key not in st.session_state:
+            st.session_state[save_lock_key] = False
+
         with st.form("prediction_form", clear_on_submit=False):
             st.subheader("Prediction Window: Next Atlanta United Match Only")
             st.write(
@@ -971,9 +984,13 @@ with predictions_tab:
                 key=f"away_{next_match['match_id']}",
             )
 
-            submitted = st.form_submit_button("Save Prediction")
+            submitted = st.form_submit_button(
+                "Save Prediction",
+                disabled=st.session_state[save_lock_key],
+            )
 
         if submitted:
+            st.session_state[save_lock_key] = True
             if now_utc > next_match["match_kickoff"] + timedelta(minutes=15):
                 st.error("Predictions are closed for this match (15-minute grace period has passed).")
             else:
@@ -990,8 +1007,11 @@ with predictions_tab:
                     "final_home": pd.NA,
                     "final_away": pd.NA,
                 }
-                upsert_user_prediction(conn, row)
-                st.success("Prediction saved to Google Sheets.")
+                with st.spinner("Syncing prediction with Google Sheets..."):
+                    save_succeeded = upsert_user_prediction(conn, row)
+                if save_succeeded:
+                    st.success("Prediction saved to Google Sheets.")
+            st.session_state[save_lock_key] = False
 
     st.divider()
     st.markdown("### Points Logic")
