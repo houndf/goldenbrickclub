@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -603,11 +604,22 @@ with st.sidebar:
                     st.error("Username already taken. Please pick another one.")
                 else:
                     users[entered_name] = entered_passcode
-                    save_users(users)
-                    st.success("Account created! Logging you in...")
-                    time.sleep(0.5)
-                    st.session_state["logged_in_user"] = entered_name
-                    st.rerun()
+                    with st.spinner("Creating account and setting up your dashboard..."):
+                        try:
+                            with ThreadPoolExecutor(max_workers=1) as executor:
+                                future = executor.submit(save_users, users)
+                                future.result(timeout=2)
+
+                            time.sleep(2)
+                            st.session_state["logged_in_user"] = entered_name
+                            st.rerun()
+                        except FuturesTimeoutError:
+                            st.error(
+                                "Account creation timed out after 2 seconds while waiting for Google Sheets. "
+                                "Please try again."
+                            )
+                        except Exception as exc:
+                            st.error(f"Could not create account due to a Google Sheets error: {exc}")
 
     is_logged_in = bool(st.session_state["logged_in_user"])
     active_user_name = st.session_state["logged_in_user"] or ""
