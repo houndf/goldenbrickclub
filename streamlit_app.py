@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -603,7 +604,10 @@ with st.sidebar:
                 else:
                     users[entered_name] = entered_passcode
                     save_users(users)
-                    st.success("Account created! You can now log in.")
+                    st.success("Account created! Logging you in...")
+                    time.sleep(0.5)
+                    st.session_state["logged_in_user"] = entered_name
+                    st.rerun()
 
     is_logged_in = bool(st.session_state["logged_in_user"])
     active_user_name = st.session_state["logged_in_user"] or ""
