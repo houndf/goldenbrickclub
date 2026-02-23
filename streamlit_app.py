@@ -816,10 +816,10 @@ with leaderboard_tab:
             top_user = active_segment_standings.iloc[0]
             bottom_user = active_segment_standings.iloc[-1]
             st.markdown(
-                f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+                f"### {active_segment_label}: 🏆 **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
             )
             st.markdown(
-                f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+                f"### {active_segment_label}: 🥄 **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
             )
         else:
             st.info("Segment trophies will appear once the active segment has completed matches.")
