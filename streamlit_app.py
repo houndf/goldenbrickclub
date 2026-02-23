@@ -340,6 +340,42 @@ def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None
     conn.update(worksheet="predictions", data=predictions)
 
 
+def load_actual_results(conn: GSheetsConnection) -> pd.DataFrame:
+    """Load match results from the fixtures worksheet."""
+    service_account_client = _build_service_account_client()
+    try:
+        if service_account_client is not None:
+            fixtures = service_account_client.read(worksheet="fixtures", ttl=0)
+        else:
+            fixtures = conn.read(worksheet="fixtures", ttl=0)
+    except Exception:
+        return pd.DataFrame(columns=["match_id", "home_score", "away_score", "is_finished"])
+
+    if fixtures is None:
+        return pd.DataFrame(columns=["match_id", "home_score", "away_score", "is_finished"])
+
+    for col in ["match_id", "home_score", "away_score", "is_finished"]:
+        if col not in fixtures.columns:
+            fixtures[col] = pd.NA
+
+    fixtures = fixtures[["match_id", "home_score", "away_score", "is_finished"]].copy()
+    fixtures["match_id"] = fixtures["match_id"].astype(str)
+    fixtures["home_score"] = pd.to_numeric(fixtures["home_score"], errors="coerce")
+    fixtures["away_score"] = pd.to_numeric(fixtures["away_score"], errors="coerce")
+    fixtures["is_finished"] = fixtures["is_finished"].apply(_is_true)
+    return fixtures
+
+
+def save_actual_results(conn: GSheetsConnection, fixtures: pd.DataFrame) -> None:
+    """Persist match results to the fixtures worksheet."""
+    output = fixtures[["match_id", "home_score", "away_score", "is_finished"]].copy()
+    service_account_client = _build_service_account_client()
+    if service_account_client is not None:
+        service_account_client.update(worksheet="fixtures", data=output)
+        return
+    conn.update(worksheet="fixtures", data=output)
+
+
 def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
     try:
         has_service_account = "gcp_service_account" in st.secrets
@@ -375,26 +411,16 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool
     predictions = load_predictions(conn)
     row_match_id = str(row["match_id"])
     original_row_count = len(predictions)
+    required_cols = ["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]
 
     if predictions.empty:
         updated = pd.DataFrame([row])
     else:
-        required_cols = [
-            "submitted_at",
-            "user_name",
-            "match_id",
-            "home_team",
-            "away_team",
-            "match_kickoff",
-            "pred_home",
-            "pred_away",
-            "points_earned",
-            "final_home",
-            "final_away",
-        ]
         for col in required_cols:
             if col not in predictions.columns:
                 predictions[col] = pd.NA
+
+        predictions = predictions[required_cols].copy()
 
         predictions["user_name"] = predictions["user_name"].astype(str)
         predictions["match_id"] = predictions["match_id"].astype(str)
@@ -407,6 +433,7 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool
 
     updated["user_name"] = updated["user_name"].astype(str)
     updated["match_id"] = updated["match_id"].astype(str)
+    updated = updated[required_cols].copy()
     updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
 
     if original_row_count > 5 and len(updated) <= 1:
@@ -447,87 +474,20 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
     return upcoming.iloc[0], None
 
 
-def auto_score_latest_finished_match(conn: GSheetsConnection, fixtures_df: pd.DataFrame, now_utc: datetime) -> Optional[pd.DataFrame]:
-    """Find finished Atlanta United matches, score latest one, and return recent results."""
-    del fixtures_df
+def build_recent_results(schedule_df: pd.DataFrame, actual_results_df: pd.DataFrame) -> pd.DataFrame:
+    """Build recently finished match list from schedule + fixtures worksheet."""
+    if schedule_df.empty or actual_results_df.empty:
+        return pd.DataFrame()
 
-    url = f"{API_BASE_URL}/eventspastleague.php"
-    params = {"id": MLS_LEAGUE_ID}
+    recent = schedule_df.copy()
+    recent["match_id"] = recent["match_id"].astype(str)
+    merged = recent.merge(actual_results_df, on="match_id", how="left")
+    merged = merged[merged["is_finished"]].copy()
+    if merged.empty:
+        return pd.DataFrame()
 
-    try:
-        response = requests.get(url, params=params, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        st.error(f"Failed to fetch completed matches from TheSportsDB: {exc}")
-        return None
-
-    rows: list[dict[str, Any]] = []
-    for event in payload.get("events") or []:
-        home_name = event.get("strHomeTeam")
-        away_name = event.get("strAwayTeam")
-        if ATLANTA_TEAM_NAME not in (home_name, away_name):
-            continue
-
-        home_score = _as_int(event.get("intHomeScore"))
-        away_score = _as_int(event.get("intAwayScore"))
-        if home_score is None or away_score is None:
-            continue
-
-        match_date = event.get("dateEvent")
-        match_time = event.get("strTime")
-        kickoff_value = f"{match_date} {match_time}" if match_time else match_date
-        kickoff = parse_kickoff(kickoff_value)
-        if kickoff is None or kickoff > now_utc:
-            continue
-
-        rows.append(
-            {
-                "match_id": str(event.get("idEvent")),
-                "home_team": home_name,
-                "away_team": away_name,
-                "match_kickoff": kickoff,
-                "final_home": home_score,
-                "final_away": away_score,
-            }
-        )
-
-    if not rows:
-        return None
-
-    results_df = pd.DataFrame(rows).sort_values("match_kickoff").reset_index(drop=True)
-    latest = results_df.iloc[-1]
-    actual_home = _as_int(latest["final_home"])
-    actual_away = _as_int(latest["final_away"])
-    if actual_home is None or actual_away is None:
-        return None
-
-    predictions = load_predictions(conn)
-    if predictions.empty:
-        return results_df.sort_values("match_kickoff", ascending=False).head(10).reset_index(drop=True)
-
-    for col in ["pred_home", "pred_away", "match_id", "points_earned", "final_home", "final_away"]:
-        if col not in predictions.columns:
-            predictions[col] = pd.NA
-
-    predictions["pred_home"] = pd.to_numeric(predictions["pred_home"], errors="coerce")
-    predictions["pred_away"] = pd.to_numeric(predictions["pred_away"], errors="coerce")
-
-    target_match_id = str(latest["match_id"])
-    target_rows = predictions["match_id"].astype(str).eq(target_match_id)
-
-    if target_rows.any():
-        def row_points(row: pd.Series) -> Optional[int]:
-            if pd.isna(row.get("pred_home")) or pd.isna(row.get("pred_away")):
-                return pd.NA
-            return calculate_points(int(row["pred_home"]), int(row["pred_away"]), actual_home, actual_away)
-
-        predictions.loc[target_rows, "points_earned"] = predictions.loc[target_rows].apply(row_points, axis=1)
-        predictions.loc[target_rows, "final_home"] = actual_home
-        predictions.loc[target_rows, "final_away"] = actual_away
-        save_predictions(conn, predictions)
-
-    return results_df.sort_values("match_kickoff", ascending=False).head(10).reset_index(drop=True)
+    merged = merged.rename(columns={"home_score": "final_home", "away_score": "final_away"})
+    return merged.sort_values("match_kickoff", ascending=False).head(10).reset_index(drop=True)
 
 
 def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
@@ -637,11 +597,20 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 fixtures_df = load_mls_atlanta_fixtures()
 schedule_df = load_schedule_from_json()
 now_utc = datetime.now(timezone.utc)
-recent_results_df = auto_score_latest_finished_match(conn, fixtures_df, now_utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
-if not predictions_df.empty and "match_id" in predictions_df.columns:
+actual_results_df = load_actual_results(conn)
+
+if not predictions_df.empty:
+    for col in ["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]:
+        if col not in predictions_df.columns:
+            predictions_df[col] = pd.NA
+    predictions_df = predictions_df[["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]].copy()
     predictions_df["match_id"] = predictions_df["match_id"].astype(str)
+    predictions_df["pred_home"] = pd.to_numeric(predictions_df["pred_home"], errors="coerce")
+    predictions_df["pred_away"] = pd.to_numeric(predictions_df["pred_away"], errors="coerce")
+
+recent_results_df = build_recent_results(schedule_df, actual_results_df)
 
 match_segments = pd.DataFrame(columns=["match_id", "segment"])
 if not schedule_df.empty and {"match_id", "segment"}.issubset(schedule_df.columns):
@@ -651,26 +620,33 @@ if not match_segments.empty:
     match_segments["match_id"] = match_segments["match_id"].astype(str)
     match_segments["segment"] = pd.to_numeric(match_segments["segment"], errors="coerce").astype("Int64")
 
-if predictions_df.empty or "user_name" not in predictions_df.columns:
+scored_predictions = pd.DataFrame()
+if not predictions_df.empty and not actual_results_df.empty and "user_name" in predictions_df.columns:
+    scored_predictions = predictions_df.merge(actual_results_df, on="match_id", how="inner")
+    scored_predictions = scored_predictions[scored_predictions["is_finished"]].copy()
+    if not scored_predictions.empty:
+        def calc_row_points(row: pd.Series) -> Optional[int]:
+            pred_home = _as_int(row.get("pred_home"))
+            pred_away = _as_int(row.get("pred_away"))
+            actual_home = _as_int(row.get("home_score"))
+            actual_away = _as_int(row.get("away_score"))
+            if pred_home is None or pred_away is None:
+                return pd.NA
+            return calculate_points(pred_home, pred_away, actual_home, actual_away)
+
+        scored_predictions["points_earned"] = scored_predictions.apply(calc_row_points, axis=1)
+        if not match_segments.empty:
+            scored_predictions = scored_predictions.merge(match_segments, on="match_id", how="left")
+        else:
+            scored_predictions["segment"] = pd.NA
+
+if scored_predictions.empty:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
     active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
     active_segment_label: Optional[str] = None
 else:
-    leaderboard = predictions_df.copy()
-    for col in ["points_earned", "final_home", "final_away", "match_id"]:
-        if col not in leaderboard.columns:
-            leaderboard[col] = pd.NA
-
-    leaderboard["points_earned"] = pd.to_numeric(leaderboard["points_earned"], errors="coerce").fillna(0)
-    leaderboard["match_id"] = leaderboard["match_id"].astype(str)
-
-    if not match_segments.empty:
-        leaderboard = leaderboard.merge(match_segments, on="match_id", how="left")
-    else:
-        leaderboard["segment"] = pd.NA
-
     standings = (
-        leaderboard.groupby("user_name", dropna=True, as_index=False)["points_earned"]
+        scored_predictions.groupby("user_name", dropna=True, as_index=False)["points_earned"]
         .sum()
         .sort_values("points_earned", ascending=False)
         .reset_index(drop=True)
@@ -678,8 +654,7 @@ else:
     standings["Rank"] = standings.index + 1
     standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
 
-    completed_rows = leaderboard[leaderboard["final_home"].notna() & leaderboard["final_away"].notna()].copy()
-    completed_match_ids = set(completed_rows["match_id"].dropna().astype(str).tolist())
+    completed_match_ids = set(scored_predictions["match_id"].dropna().astype(str).tolist())
 
     active_segment_label = None
     active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
@@ -699,7 +674,7 @@ else:
 
         if pd.notna(active_segment):
             active_segment_label = f"Segment {int(active_segment)}"
-            scored_segment_rows = completed_rows[completed_rows["segment"] == active_segment].copy()
+            scored_segment_rows = scored_predictions[scored_predictions["segment"] == active_segment].copy()
             if not scored_segment_rows.empty:
                 active_segment_standings = (
                     scored_segment_rows.groupby("user_name", dropna=True, as_index=False)["points_earned"]
@@ -717,11 +692,15 @@ current_user_extra_gold = (
     current_user_data is not None
     and _is_true(pd.to_numeric(current_user_data.get("extra_gold_status"), errors="coerce"))
 )
+current_user_type = str(current_user_data.get("user_type") if current_user_data is not None else "").strip().lower()
+is_admin_user = current_user_type == "admin"
 
 base_tabs = ["🏠 Home", "📅 Matches", "🏆 Leaderboard", "🔮 Predictions", "❓ FAQ"]
 tabs_to_render = base_tabs.copy()
 if current_user_extra_gold:
     tabs_to_render.insert(3, "✨ Extra Gold")
+if is_admin_user:
+    tabs_to_render.insert(-1, "🛠️ Admin")
 
 tabs = st.tabs(tabs_to_render)
 tab_lookup = dict(zip(tabs_to_render, tabs))
@@ -730,6 +709,7 @@ home_tab = tab_lookup["🏠 Home"]
 matches_tab = tab_lookup["📅 Matches"]
 leaderboard_tab = tab_lookup["🏆 Leaderboard"]
 extra_gold_tab = tab_lookup.get("✨ Extra Gold")
+admin_tab = tab_lookup.get("🛠️ Admin")
 predictions_tab = tab_lookup["🔮 Predictions"]
 faq_tab = tab_lookup["❓ FAQ"]
 
@@ -780,17 +760,14 @@ with matches_tab:
         matches_display = schedule_df.copy()
 
         score_map: dict[str, tuple[Optional[int], Optional[int]]] = {}
-        if not predictions_df.empty and "match_id" in predictions_df.columns:
-            scored = predictions_df.copy()
-            for col in ["final_home", "final_away"]:
-                if col not in scored.columns:
-                    scored[col] = pd.NA
-                scored[col] = pd.to_numeric(scored[col], errors="coerce")
-
-            scored = scored[scored["final_home"].notna() & scored["final_away"].notna()].copy()
-            scored = scored.sort_values("submitted_at") if "submitted_at" in scored.columns else scored
-            for _, row in scored.iterrows():
-                score_map[str(row["match_id"])] = (int(row["final_home"]), int(row["final_away"]))
+        if not actual_results_df.empty:
+            finished_rows = actual_results_df[actual_results_df["is_finished"]].copy()
+            for _, row in finished_rows.iterrows():
+                home_score = _as_int(row.get("home_score"))
+                away_score = _as_int(row.get("away_score"))
+                if home_score is None or away_score is None:
+                    continue
+                score_map[str(row["match_id"])] = (home_score, away_score)
 
         matches_display["final_home"] = matches_display["match_id"].astype(str).map(
             lambda mid: score_map.get(mid, (None, None))[0]
@@ -919,6 +896,69 @@ if extra_gold_tab is not None:
                     hide_index=True,
                 )
 
+if admin_tab is not None:
+    with admin_tab:
+        st.markdown("### 🛠️ Admin Results Entry")
+        if schedule_df.empty:
+            st.info("No schedule entries found in schedule.json.")
+        else:
+            admin_schedule = schedule_df.copy()
+            admin_schedule = admin_schedule[admin_schedule["match_kickoff"].notna()].copy()
+            admin_schedule = admin_schedule[admin_schedule["match_kickoff"] <= now_utc].copy()
+
+            if admin_schedule.empty:
+                st.info("No passed matches are available to score yet.")
+            else:
+                admin_schedule = admin_schedule.sort_values("match_kickoff", ascending=False).reset_index(drop=True)
+                option_labels = {
+                    str(row["match_id"]): f"{row['kickoff_et']} — {row['home_team']} vs {row['away_team']}"
+                    for _, row in admin_schedule.iterrows()
+                }
+                match_ids = list(option_labels.keys())
+                selected_match_id = st.selectbox(
+                    "Select a passed match",
+                    options=match_ids,
+                    format_func=lambda mid: option_labels.get(mid, mid),
+                )
+
+                selected_result = actual_results_df[actual_results_df["match_id"] == str(selected_match_id)]
+                default_home = 0
+                default_away = 0
+                if not selected_result.empty:
+                    existing_home = _as_int(selected_result.iloc[-1].get("home_score"))
+                    existing_away = _as_int(selected_result.iloc[-1].get("away_score"))
+                    if existing_home is not None:
+                        default_home = existing_home
+                    if existing_away is not None:
+                        default_away = existing_away
+
+                col1, col2 = st.columns(2)
+                final_home = col1.number_input("Final Home Score", min_value=0, max_value=20, step=1, value=default_home)
+                final_away = col2.number_input("Final Away Score", min_value=0, max_value=20, step=1, value=default_away)
+
+                if st.button("Save Result", type="primary"):
+                    updated_results = actual_results_df.copy()
+                    if updated_results.empty:
+                        updated_results = pd.DataFrame(columns=["match_id", "home_score", "away_score", "is_finished"])
+
+                    for col in ["match_id", "home_score", "away_score", "is_finished"]:
+                        if col not in updated_results.columns:
+                            updated_results[col] = pd.NA
+
+                    updated_results["match_id"] = updated_results["match_id"].astype(str)
+                    updated_results = updated_results[updated_results["match_id"] != str(selected_match_id)].copy()
+                    updated_row = {
+                        "match_id": str(selected_match_id),
+                        "home_score": int(final_home),
+                        "away_score": int(final_away),
+                        "is_finished": True,
+                    }
+                    updated_results = pd.concat([updated_results, pd.DataFrame([updated_row])], ignore_index=True)
+                    save_actual_results(conn, updated_results)
+                    st.success("Result saved to fixtures worksheet.")
+                    st.rerun()
+
+
 with predictions_tab:
     if next_match is not None:
         kickoff = next_match["match_kickoff"]
@@ -998,14 +1038,8 @@ with predictions_tab:
                     "submitted_at": now_utc.isoformat(),
                     "user_name": active_user_name,
                     "match_id": str(next_match["match_id"]),
-                    "home_team": next_match["home_team"],
-                    "away_team": next_match["away_team"],
-                    "match_kickoff": next_match["match_kickoff"].isoformat(),
                     "pred_home": int(pred_home),
                     "pred_away": int(pred_away),
-                    "points_earned": pd.NA,
-                    "final_home": pd.NA,
-                    "final_away": pd.NA,
                 }
                 with st.spinner("Syncing prediction with Google Sheets..."):
                     save_succeeded = upsert_user_prediction(conn, row)
