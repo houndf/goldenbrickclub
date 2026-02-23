@@ -482,6 +482,8 @@ def build_recent_results(schedule_df: pd.DataFrame, actual_results_df: pd.DataFr
     recent = schedule_df.copy()
     recent["match_id"] = recent["match_id"].astype(str)
     merged = recent.merge(actual_results_df, on="match_id", how="left")
+    merged["is_finished"] = merged["is_finished"].fillna(False)
+    merged["is_finished"] = merged["is_finished"].astype(bool)
     merged = merged[merged["is_finished"]].copy()
     if merged.empty:
         return pd.DataFrame()
@@ -623,6 +625,8 @@ if not match_segments.empty:
 scored_predictions = pd.DataFrame()
 if not predictions_df.empty and not actual_results_df.empty and "user_name" in predictions_df.columns:
     scored_predictions = predictions_df.merge(actual_results_df, on="match_id", how="inner")
+    scored_predictions["is_finished"] = scored_predictions["is_finished"].fillna(False)
+    scored_predictions["is_finished"] = scored_predictions["is_finished"].astype(bool)
     scored_predictions = scored_predictions[scored_predictions["is_finished"]].copy()
     if not scored_predictions.empty:
         def calc_row_points(row: pd.Series) -> Optional[int]:
@@ -761,7 +765,10 @@ with matches_tab:
 
         score_map: dict[str, tuple[Optional[int], Optional[int]]] = {}
         if not actual_results_df.empty:
-            finished_rows = actual_results_df[actual_results_df["is_finished"]].copy()
+            finished_rows = actual_results_df.copy()
+            finished_rows["is_finished"] = finished_rows["is_finished"].fillna(False)
+            finished_rows["is_finished"] = finished_rows["is_finished"].astype(bool)
+            finished_rows = finished_rows[finished_rows["is_finished"]].copy()
             for _, row in finished_rows.iterrows():
                 home_score = _as_int(row.get("home_score"))
                 away_score = _as_int(row.get("away_score"))
