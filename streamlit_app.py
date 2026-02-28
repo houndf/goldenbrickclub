@@ -358,22 +358,45 @@ def load_actual_results(conn: GSheetsConnection) -> pd.DataFrame:
         if col not in fixtures.columns:
             fixtures[col] = pd.NA
 
-    fixtures = fixtures[["match_id", "home_score", "away_score", "is_finished"]].copy()
+    fixtures = fixtures.copy()
     fixtures["match_id"] = fixtures["match_id"].astype(str)
     fixtures["home_score"] = pd.to_numeric(fixtures["home_score"], errors="coerce")
     fixtures["away_score"] = pd.to_numeric(fixtures["away_score"], errors="coerce")
-    fixtures["is_finished"] = fixtures["is_finished"].apply(_is_true)
+    fixtures["is_finished"] = fixtures["is_finished"].apply(_is_true).fillna(False).astype(bool)
     return fixtures
 
 
 def save_actual_results(conn: GSheetsConnection, fixtures: pd.DataFrame) -> None:
     """Persist match results to the fixtures worksheet."""
-    output = fixtures[["match_id", "home_score", "away_score", "is_finished"]].copy()
+    output = fixtures.copy()
+    output["match_id"] = output["match_id"].astype(str)
+    output["is_finished"] = output["is_finished"].fillna(False).astype(bool)
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
         service_account_client.update(worksheet="fixtures", data=output)
         return
     conn.update(worksheet="fixtures", data=output)
+
+
+def load_fixtures_reference(conn: GSheetsConnection, schedule_df: pd.DataFrame) -> pd.DataFrame:
+    """Build fixtures reference by merging schedule.json and fixtures worksheet on match_id."""
+    base = schedule_df.copy()
+    if base.empty:
+        return base
+
+    base["match_id"] = base["match_id"].astype(str)
+    sheet_fixtures = load_actual_results(conn)
+    if sheet_fixtures.empty:
+        base["home_score"] = pd.NA
+        base["away_score"] = pd.NA
+        base["is_finished"] = False
+        return base
+
+    merged = base.merge(sheet_fixtures, on="match_id", how="left", suffixes=("", "_sheet"))
+    merged["home_score"] = pd.to_numeric(merged.get("home_score"), errors="coerce")
+    merged["away_score"] = pd.to_numeric(merged.get("away_score"), errors="coerce")
+    merged["is_finished"] = merged["is_finished"].fillna(False).astype(bool)
+    return merged
 
 
 def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
@@ -474,16 +497,13 @@ def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tu
     return upcoming.iloc[0], None
 
 
-def build_recent_results(schedule_df: pd.DataFrame, actual_results_df: pd.DataFrame) -> pd.DataFrame:
-    """Build recently finished match list from schedule + fixtures worksheet."""
-    if schedule_df.empty or actual_results_df.empty:
+def build_recent_results(fixtures_reference_df: pd.DataFrame) -> pd.DataFrame:
+    """Build recently finished match list from merged fixtures reference."""
+    if fixtures_reference_df.empty:
         return pd.DataFrame()
 
-    recent = schedule_df.copy()
-    recent["match_id"] = recent["match_id"].astype(str)
-    merged = recent.merge(actual_results_df, on="match_id", how="left")
-    merged["is_finished"] = merged["is_finished"].fillna(False)
-    merged["is_finished"] = merged["is_finished"].astype(bool)
+    merged = fixtures_reference_df.copy()
+    merged["is_finished"] = merged["is_finished"].fillna(False).astype(bool)
     merged = merged[merged["is_finished"]].copy()
     if merged.empty:
         return pd.DataFrame()
@@ -596,8 +616,8 @@ with st.sidebar:
     active_user_name = st.session_state["logged_in_user"] or ""
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-fixtures_df = load_mls_atlanta_fixtures()
 schedule_df = load_schedule_from_json()
+fixtures_df = load_fixtures_reference(conn, schedule_df)
 now_utc = datetime.now(timezone.utc)
 next_match, lock_message = determine_prediction_target(fixtures_df, now_utc)
 predictions_df = load_predictions(conn)
@@ -612,7 +632,7 @@ if not predictions_df.empty:
     predictions_df["pred_home"] = pd.to_numeric(predictions_df["pred_home"], errors="coerce")
     predictions_df["pred_away"] = pd.to_numeric(predictions_df["pred_away"], errors="coerce")
 
-recent_results_df = build_recent_results(schedule_df, actual_results_df)
+recent_results_df = build_recent_results(fixtures_df)
 
 match_segments = pd.DataFrame(columns=["match_id", "segment"])
 if not schedule_df.empty and {"match_id", "segment"}.issubset(schedule_df.columns):
@@ -624,9 +644,10 @@ if not match_segments.empty:
 
 scored_predictions = pd.DataFrame()
 if not predictions_df.empty and not actual_results_df.empty and "user_name" in predictions_df.columns:
-    scored_predictions = predictions_df.merge(actual_results_df, on="match_id", how="inner")
-    scored_predictions["is_finished"] = scored_predictions["is_finished"].fillna(False)
-    scored_predictions["is_finished"] = scored_predictions["is_finished"].astype(bool)
+    scoring_results = actual_results_df[["match_id", "home_score", "away_score", "is_finished"]].copy()
+    scoring_results["is_finished"] = scoring_results["is_finished"].fillna(False).astype(bool)
+    scored_predictions = predictions_df.merge(scoring_results, on="match_id", how="inner")
+    scored_predictions["is_finished"] = scored_predictions["is_finished"].fillna(False).astype(bool)
     scored_predictions = scored_predictions[scored_predictions["is_finished"]].copy()
     if not scored_predictions.empty:
         def calc_row_points(row: pd.Series) -> Optional[int]:
@@ -911,10 +932,9 @@ if admin_tab is not None:
         else:
             admin_schedule = schedule_df.copy()
             admin_schedule = admin_schedule[admin_schedule["match_kickoff"].notna()].copy()
-            admin_schedule = admin_schedule[admin_schedule["match_kickoff"] <= now_utc].copy()
 
             if admin_schedule.empty:
-                st.info("No passed matches are available to score yet.")
+                st.info("No matches with kickoff times are available to score yet.")
             else:
                 admin_schedule = admin_schedule.sort_values("match_kickoff", ascending=False).reset_index(drop=True)
                 option_labels = {
@@ -923,7 +943,7 @@ if admin_tab is not None:
                 }
                 match_ids = list(option_labels.keys())
                 selected_match_id = st.selectbox(
-                    "Select a passed match",
+                    "Select a match",
                     options=match_ids,
                     format_func=lambda mid: option_labels.get(mid, mid),
                 )
