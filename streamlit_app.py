@@ -431,40 +431,47 @@ def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
 
 
 def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool:
-    predictions = load_predictions(conn)
-    row_match_id = str(row["match_id"])
-    original_row_count = len(predictions)
     required_cols = ["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]
+    try:
+        predictions = load_predictions(conn)
+        original_row_count = len(predictions)
 
-    if predictions.empty:
-        updated = pd.DataFrame([row])
-    else:
-        for col in required_cols:
-            if col not in predictions.columns:
-                predictions[col] = pd.NA
+        if original_row_count == 0:
+            predictions_retry = load_predictions(conn)
+            if predictions_retry is not None and not predictions_retry.empty:
+                raise Exception("Sync mismatch detected")
 
-        predictions = predictions[required_cols].copy()
+        predictions = predictions.reindex(columns=required_cols).copy()
 
-        predictions["user_name"] = predictions["user_name"].astype(str)
-        predictions["match_id"] = predictions["match_id"].astype(str)
+        row_df = pd.DataFrame([row]).reindex(columns=required_cols)
+        row_match_id = str(row_df.loc[0, "match_id"])
+        row_user_name = str(row_df.loc[0, "user_name"])
 
-        existing_row_mask = (predictions["user_name"] == str(row["user_name"])) & (
-            predictions["match_id"] == row_match_id
-        )
-        filtered_predictions = predictions.loc[~existing_row_mask].copy()
-        updated = pd.concat([filtered_predictions, pd.DataFrame([row])], ignore_index=True)
+        if predictions.empty:
+            updated = row_df.copy()
+        else:
+            predictions["user_name"] = predictions["user_name"].astype(str)
+            predictions["match_id"] = predictions["match_id"].astype(str)
 
-    updated["user_name"] = updated["user_name"].astype(str)
-    updated["match_id"] = updated["match_id"].astype(str)
-    updated = updated[required_cols].copy()
-    updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
+            existing_row_mask = (predictions["user_name"] == row_user_name) & (
+                predictions["match_id"] == row_match_id
+            )
+            filtered_predictions = predictions.loc[~existing_row_mask].copy()
+            updated = pd.concat([filtered_predictions, row_df], ignore_index=True)
 
-    if original_row_count > 5 and len(updated) <= 1:
-        st.error("Sync error: Predicted data mismatch. Please try saving again.")
+        updated["user_name"] = updated["user_name"].astype(str)
+        updated["match_id"] = updated["match_id"].astype(str)
+        updated = updated[required_cols].copy()
+        updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
+
+        if original_row_count > 5 and len(updated) <= 1:
+            raise Exception("Sync mismatch detected")
+
+        save_predictions(conn, updated)
+        return True
+    except Exception as exc:
+        st.error(f"Sync error: {exc}. Please try saving again.")
         return False
-
-    save_predictions(conn, updated)
-    return True
 
 
 def determine_prediction_target(fixtures: pd.DataFrame, now_utc: datetime) -> tuple[Optional[pd.Series], Optional[str]]:
