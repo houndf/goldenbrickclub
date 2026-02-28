@@ -442,6 +442,7 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool
                 raise Exception("Sync mismatch detected")
 
         predictions = predictions.reindex(columns=required_cols).copy()
+        original_user_names = set(predictions["user_name"].dropna().astype(str).unique())
 
         row_df = pd.DataFrame([row]).reindex(columns=required_cols)
         row_match_id = str(row_df.loc[0, "match_id"])
@@ -464,8 +465,14 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool
         updated = updated[required_cols].copy()
         updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
 
-        if original_row_count > 5 and len(updated) <= 1:
-            raise Exception("Sync mismatch detected")
+        if original_row_count >= 1 and len(updated) < original_row_count:
+            st.error("Sync error: Predicted data mismatch. Please try saving again.")
+            return False
+
+        updated_user_names = set(updated["user_name"].dropna().astype(str).unique())
+        if not original_user_names.issubset(updated_user_names):
+            st.error("Sync error: Predicted data mismatch. Please try saving again.")
+            return False
 
         save_predictions(conn, updated)
         return True
