@@ -834,13 +834,25 @@ with matches_tab:
 with leaderboard_tab:
     if current_user_extra_gold:
         if active_segment_label and not active_segment_standings.empty:
-            top_user = active_segment_standings.iloc[0]
-            bottom_user = active_segment_standings.iloc[-1]
+            max_pts = active_segment_standings["Segment Points"].max()
+            min_pts = active_segment_standings["Segment Points"].min()
+            top_users = ", ".join(
+                active_segment_standings.loc[
+                    active_segment_standings["Segment Points"] == max_pts, "User"
+                ].astype(str)
+            )
+            bottom_users = ", ".join(
+                active_segment_standings.loc[
+                    active_segment_standings["Segment Points"] == min_pts, "User"
+                ].astype(str)
+            )
+            top_title = "Champions" if ", " in top_users else "Champion"
+            bottom_title = "Recipients" if ", " in bottom_users else "Recipient"
             st.markdown(
-                f"### {active_segment_label}: 🏆 **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+                f"### {active_segment_label}: 🏆 Gnomore Lossus {top_title} — **{top_users} ({int(max_pts)} pts)**"
             )
             st.markdown(
-                f"### {active_segment_label}: 🥄 **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+                f"### {active_segment_label}: 🥄 Wooden Spoon {bottom_title} — **{bottom_users} ({int(min_pts)} pts)**"
             )
         else:
             st.info("Segment trophies will appear once the active segment has completed matches.")
@@ -893,13 +905,25 @@ if extra_gold_tab is not None:
                 gold_segment_standings["Rank"] = gold_segment_standings.index + 1
 
             if active_segment_label and not gold_segment_standings.empty:
-                top_user = gold_segment_standings.iloc[0]
-                bottom_user = gold_segment_standings.iloc[-1]
+                max_pts = gold_segment_standings["Segment Points"].max()
+                min_pts = gold_segment_standings["Segment Points"].min()
+                top_users = ", ".join(
+                    gold_segment_standings.loc[
+                        gold_segment_standings["Segment Points"] == max_pts, "User"
+                    ].astype(str)
+                )
+                bottom_users = ", ".join(
+                    gold_segment_standings.loc[
+                        gold_segment_standings["Segment Points"] == min_pts, "User"
+                    ].astype(str)
+                )
+                top_title = "Champions" if ", " in top_users else "Champion"
+                bottom_title = "Recipients" if ", " in bottom_users else "Recipient"
                 st.markdown(
-                    f"### {active_segment_label}: 🏆 Gnomore Lossus — **{top_user['User']} ({int(top_user['Segment Points'])} pts)**"
+                    f"### {active_segment_label}: 🏆 Gnomore Lossus {top_title} — **{top_users} ({int(max_pts)} pts)**"
                 )
                 st.markdown(
-                    f"### {active_segment_label}: 🥄 Wooden Spoon — **{bottom_user['User']} ({int(bottom_user['Segment Points'])} pts)**"
+                    f"### {active_segment_label}: 🥄 Wooden Spoon {bottom_title} — **{bottom_users} ({int(min_pts)} pts)**"
                 )
             else:
                 st.info("Segment trophies will appear once the active segment has completed matches.")
