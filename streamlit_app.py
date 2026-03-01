@@ -671,28 +671,12 @@ if not predictions_df.empty and not actual_results_df.empty and "user_name" in p
             scored_predictions["segment"] = pd.NA
 
 if scored_predictions.empty:
-    standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
+    standings = pd.DataFrame(columns=["Rank", "User", "Total Points", "Accuracy Offset"])
     active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
     active_segment_label: Optional[str] = None
     trophy_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
     trophy_segment_label: Optional[str] = None
 else:
-    standings = (
-        scored_predictions.groupby("user_name", dropna=True, as_index=False)["points_earned"]
-        .sum()
-        .sort_values("points_earned", ascending=False)
-        .reset_index(drop=True)
-    )
-    standings["Rank"] = standings.index + 1
-    standings = standings.rename(columns={"user_name": "User", "points_earned": "Total Points"})
-
-    completed_match_ids = set(scored_predictions["match_id"].dropna().astype(str).tolist())
-
-    active_segment_label = None
-    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
-    trophy_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
-    trophy_segment_label = None
-
     scored_predictions["goal_diff"] = (
         (
             pd.to_numeric(scored_predictions["pred_home"], errors="coerce")
@@ -703,6 +687,29 @@ else:
             + pd.to_numeric(scored_predictions["away_score"], errors="coerce")
         )
     ).abs()
+
+    standings = (
+        scored_predictions.groupby("user_name", dropna=True, as_index=False)["points_earned"]
+        .sum()
+        .merge(
+            scored_predictions.groupby("user_name", dropna=True, as_index=False)["goal_diff"].sum(),
+            on="user_name",
+            how="left",
+        )
+        .sort_values(["points_earned", "goal_diff"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    standings["Rank"] = standings.index + 1
+    standings = standings.rename(
+        columns={"user_name": "User", "points_earned": "Total Points", "goal_diff": "Accuracy Offset"}
+    )
+
+    completed_match_ids = set(scored_predictions["match_id"].dropna().astype(str).tolist())
+
+    active_segment_label = None
+    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+    trophy_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+    trophy_segment_label = None
 
     def build_segment_standings(segment_rows: pd.DataFrame) -> pd.DataFrame:
         if segment_rows.empty:
@@ -777,8 +784,30 @@ def _segment_award_details(
     bottom_details = {
         "user": str(bottom_row["User"]),
         "points": int(bottom_row["Segment Points"]),
+        "offset": int(bottom_row["Accuracy Offset"]),
     }
     return top_details, bottom_details
+
+
+def _build_honorable_mentions(
+    segment_standings: pd.DataFrame,
+    target_points: int,
+    target_offset: int,
+    offset_operator: str,
+) -> list[str]:
+    if segment_standings.empty:
+        return []
+
+    tied_rows = segment_standings[segment_standings["Segment Points"] == target_points].copy()
+    if offset_operator == "higher":
+        tied_rows = tied_rows[tied_rows["Accuracy Offset"] > target_offset]
+    else:
+        tied_rows = tied_rows[tied_rows["Accuracy Offset"] < target_offset]
+
+    if tied_rows.empty:
+        return []
+
+    return [f"{row['User']} (Offset: {int(row['Accuracy Offset'])})" for _, row in tied_rows.iterrows()]
 
 current_user_data = get_user_data(active_user_name)
 current_user_extra_gold = (
@@ -909,6 +938,16 @@ with leaderboard_tab:
                 )
                 if top_award["tie_broken"]:
                     st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
+                top_honorable_mentions = _build_honorable_mentions(
+                    trophy_segment_standings,
+                    top_award["points"],
+                    top_award["offset"],
+                    "higher",
+                )
+                if top_honorable_mentions:
+                    st.caption(
+                        f"*Honorable Mention (Tied on points): {', '.join(top_honorable_mentions)}*."
+                    )
         else:
             st.info("Segment trophies will appear once a segment has completed matches.")
     else:
@@ -974,9 +1013,29 @@ if extra_gold_tab is not None:
                     )
                     if top_award["tie_broken"]:
                         st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
+                    top_honorable_mentions = _build_honorable_mentions(
+                        gold_trophy_segment_standings,
+                        top_award["points"],
+                        top_award["offset"],
+                        "higher",
+                    )
+                    if top_honorable_mentions:
+                        st.caption(
+                            f"*Honorable Mention (Tied on points): {', '.join(top_honorable_mentions)}*."
+                        )
                     st.markdown(
                         f"### {trophy_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
                     )
+                    bottom_honorable_mentions = _build_honorable_mentions(
+                        gold_trophy_segment_standings,
+                        bottom_award["points"],
+                        bottom_award["offset"],
+                        "lower",
+                    )
+                    if bottom_honorable_mentions:
+                        st.caption(
+                            f"*Honorable Mention (Tied on points): {', '.join(bottom_honorable_mentions)}*."
+                        )
             else:
                 st.info("Segment trophies will appear once a segment has completed matches.")
 
