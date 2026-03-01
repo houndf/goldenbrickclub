@@ -1124,6 +1124,75 @@ with predictions_tab:
         language="text",
     )
 
+    if is_logged_in and not predictions_df.empty and {"user_name", "match_id", "pred_home", "pred_away"}.issubset(predictions_df.columns):
+        user_prediction_history = predictions_df[
+            predictions_df["user_name"].astype(str) == str(active_user_name)
+        ].copy()
+        user_prediction_history["match_id"] = user_prediction_history["match_id"].astype(str)
+
+        fixtures_history_cols = [
+            "match_id",
+            "home_team",
+            "away_team",
+            "match_kickoff",
+            "home_score",
+            "away_score",
+            "is_finished",
+        ]
+        fixtures_history = fixtures_df[fixtures_history_cols].copy()
+        fixtures_history["match_id"] = fixtures_history["match_id"].astype(str)
+
+        prediction_history = user_prediction_history.merge(fixtures_history, on="match_id", how="left")
+        prediction_history = prediction_history.sort_values("match_kickoff").reset_index(drop=True)
+
+        def calc_history_points(row: pd.Series) -> Optional[int]:
+            pred_home_score = _as_int(row.get("pred_home"))
+            pred_away_score = _as_int(row.get("pred_away"))
+            actual_home_score = _as_int(row.get("home_score"))
+            actual_away_score = _as_int(row.get("away_score"))
+
+            if pred_home_score is None or pred_away_score is None:
+                return pd.NA
+
+            return calculate_points(pred_home_score, pred_away_score, actual_home_score, actual_away_score)
+
+        prediction_history["points_earned"] = prediction_history.apply(calc_history_points, axis=1)
+        prediction_history["points_earned"] = pd.to_numeric(prediction_history["points_earned"], errors="coerce").fillna(0).astype(int)
+        prediction_history["running_total"] = prediction_history["points_earned"].cumsum()
+
+        prediction_history["Match"] = (
+            prediction_history["home_team"].fillna("Unknown") + " vs " + prediction_history["away_team"].fillna("Unknown")
+        )
+        prediction_history["Your Prediction"] = (
+            prediction_history["pred_home"].fillna(0).astype(int).astype(str)
+            + "-"
+            + prediction_history["pred_away"].fillna(0).astype(int).astype(str)
+        )
+        prediction_history["Actual Score"] = prediction_history.apply(
+            lambda row: (
+                f"{int(row['home_score'])}-{int(row['away_score'])}"
+                if bool(row.get("is_finished")) and pd.notna(row.get("home_score")) and pd.notna(row.get("away_score"))
+                else "Pending"
+            ),
+            axis=1,
+        )
+
+        display_history = prediction_history[
+            ["Match", "Your Prediction", "Actual Score", "points_earned", "running_total"]
+        ].rename(
+            columns={
+                "points_earned": "Points",
+                "running_total": "Running Total",
+            }
+        )
+
+        st.divider()
+        st.markdown("### Your Prediction History")
+        if display_history.empty:
+            st.info("You have not submitted any predictions yet.")
+        else:
+            st.dataframe(display_history, use_container_width=True, hide_index=True)
+
 with faq_tab:
     st.markdown("### ❓ FAQ")
 
