@@ -711,17 +711,17 @@ else:
         grouped_standings = (
             segment_rows.groupby("user_name", dropna=True, as_index=False)
             .agg({"points_earned": "sum", "goal_diff": "sum"})
-            .sort_values(["points_earned", "goal_diff"], ascending=[False, True])
             .reset_index(drop=True)
         )
-        grouped_standings["Rank"] = grouped_standings.index + 1
-        return grouped_standings.rename(
+        grouped_standings = grouped_standings.rename(
             columns={
                 "user_name": "User",
                 "points_earned": "Segment Points",
                 "goal_diff": "Accuracy Offset",
             }
-        )[["Rank", "User", "Segment Points", "Accuracy Offset"]]
+        ).sort_values(["Segment Points", "Accuracy Offset"], ascending=[False, True]).reset_index(drop=True)
+        grouped_standings["Rank"] = grouped_standings.index + 1
+        return grouped_standings[["Rank", "User", "Segment Points", "Accuracy Offset"]]
 
     if not match_segments.empty:
         active_segment = pd.NA
@@ -902,16 +902,13 @@ with matches_tab:
 with leaderboard_tab:
     if current_user_extra_gold:
         if trophy_segment_label and not trophy_segment_standings.empty:
-            top_award, bottom_award = _segment_award_details(trophy_segment_standings)
-            if top_award and bottom_award:
+            top_award, _ = _segment_award_details(trophy_segment_standings)
+            if top_award:
                 st.markdown(
-                    f"### {trophy_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
+                    f"### {trophy_segment_label}: 🏆 {top_award['user']} ({top_award['points']} pts)."
                 )
                 if top_award["tie_broken"]:
                     st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
-                st.markdown(
-                    f"### {trophy_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
-                )
         else:
             st.info("Segment trophies will appear once a segment has completed matches.")
     else:
