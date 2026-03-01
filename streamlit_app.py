@@ -646,6 +646,15 @@ if not predictions_df.empty and not actual_results_df.empty and "user_name" in p
     scored_predictions["is_finished"] = scored_predictions["is_finished"].fillna(False).astype(bool)
     scored_predictions = scored_predictions[scored_predictions["is_finished"]].copy()
     if not scored_predictions.empty:
+        scored_predictions["pred_total_goals"] = (
+            pd.to_numeric(scored_predictions["pred_home"], errors="coerce")
+            + pd.to_numeric(scored_predictions["pred_away"], errors="coerce")
+        )
+        scored_predictions["actual_total_goals"] = (
+            pd.to_numeric(scored_predictions["home_score"], errors="coerce")
+            + pd.to_numeric(scored_predictions["away_score"], errors="coerce")
+        )
+
         def calc_row_points(row: pd.Series) -> Optional[int]:
             pred_home = _as_int(row.get("pred_home"))
             pred_away = _as_int(row.get("pred_away"))
@@ -663,7 +672,7 @@ if not predictions_df.empty and not actual_results_df.empty and "user_name" in p
 
 if scored_predictions.empty:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
-    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
     active_segment_label: Optional[str] = None
 else:
     standings = (
@@ -678,7 +687,7 @@ else:
     completed_match_ids = set(scored_predictions["match_id"].dropna().astype(str).tolist())
 
     active_segment_label = None
-    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points"])
+    active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
 
     if not match_segments.empty:
         active_segment = pd.NA
@@ -698,15 +707,62 @@ else:
             scored_segment_rows = scored_predictions[scored_predictions["segment"] == active_segment].copy()
             if not scored_segment_rows.empty:
                 active_segment_standings = (
-                    scored_segment_rows.groupby("user_name", dropna=True, as_index=False)["points_earned"]
-                    .sum()
-                    .sort_values("points_earned", ascending=False)
+                    scored_segment_rows.groupby("user_name", dropna=True, as_index=False).agg(
+                        {
+                            "points_earned": "sum",
+                            "pred_total_goals": "sum",
+                            "actual_total_goals": "sum",
+                        }
+                    )
+                )
+                active_segment_standings["accuracy_offset"] = (
+                    active_segment_standings["pred_total_goals"]
+                    - active_segment_standings["actual_total_goals"]
+                ).abs()
+                active_segment_standings = (
+                    active_segment_standings.sort_values(
+                        ["points_earned", "accuracy_offset"], ascending=[False, True]
+                    )
                     .reset_index(drop=True)
                 )
                 active_segment_standings["Rank"] = active_segment_standings.index + 1
                 active_segment_standings = active_segment_standings.rename(
-                    columns={"user_name": "User", "points_earned": "Segment Points"}
-                )
+                    columns={
+                        "user_name": "User",
+                        "points_earned": "Segment Points",
+                        "accuracy_offset": "Accuracy Offset",
+                    }
+                )[["Rank", "User", "Segment Points", "Accuracy Offset"]]
+
+
+def _segment_award_details(
+    segment_standings: pd.DataFrame,
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    if segment_standings.empty:
+        return None, None
+
+    top_row = segment_standings.iloc[0]
+    bottom_row = segment_standings.iloc[-1]
+
+    top_tied_rows = segment_standings[segment_standings["Segment Points"] == top_row["Segment Points"]]
+    bottom_tied_rows = segment_standings[segment_standings["Segment Points"] == bottom_row["Segment Points"]]
+
+    top_tie_broken = len(top_tied_rows) > 1 and top_tied_rows["Accuracy Offset"].nunique(dropna=True) > 1
+    bottom_tie_broken = (
+        len(bottom_tied_rows) > 1 and bottom_tied_rows["Accuracy Offset"].nunique(dropna=True) > 1
+    )
+
+    top_details = {
+        "user": str(top_row["User"]),
+        "points": int(top_row["Segment Points"]),
+        "tie_broken": bool(top_tie_broken),
+    }
+    bottom_details = {
+        "user": str(bottom_row["User"]),
+        "points": int(bottom_row["Segment Points"]),
+        "tie_broken": bool(bottom_tie_broken),
+    }
+    return top_details, bottom_details
 
 current_user_data = get_user_data(active_user_name)
 current_user_extra_gold = (
@@ -830,26 +886,18 @@ with matches_tab:
 with leaderboard_tab:
     if current_user_extra_gold:
         if active_segment_label and not active_segment_standings.empty:
-            max_pts = active_segment_standings["Segment Points"].max()
-            min_pts = active_segment_standings["Segment Points"].min()
-            top_users = ", ".join(
-                active_segment_standings.loc[
-                    active_segment_standings["Segment Points"] == max_pts, "User"
-                ].astype(str)
-            )
-            bottom_users = ", ".join(
-                active_segment_standings.loc[
-                    active_segment_standings["Segment Points"] == min_pts, "User"
-                ].astype(str)
-            )
-            top_title = "Champions" if ", " in top_users else "Champion"
-            bottom_title = "Recipients" if ", " in bottom_users else "Recipient"
-            st.markdown(
-                f"### {active_segment_label}: 🏆 Gnomore Lossus {top_title} — **{top_users} ({int(max_pts)} pts)**"
-            )
-            st.markdown(
-                f"### {active_segment_label}: 🥄 Wooden Spoon {bottom_title} — **{bottom_users} ({int(min_pts)} pts)**"
-            )
+            top_award, bottom_award = _segment_award_details(active_segment_standings)
+            if top_award and bottom_award:
+                st.markdown(
+                    f"### {active_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
+                )
+                if top_award["tie_broken"]:
+                    st.caption("*(Tie-breaker: Closest to total segment goals)*")
+                st.markdown(
+                    f"### {active_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
+                )
+                if bottom_award["tie_broken"]:
+                    st.caption("*(Tie-breaker: Closest to total segment goals)*")
         else:
             st.info("Segment trophies will appear once the active segment has completed matches.")
     else:
@@ -901,26 +949,18 @@ if extra_gold_tab is not None:
                 gold_segment_standings["Rank"] = gold_segment_standings.index + 1
 
             if active_segment_label and not gold_segment_standings.empty:
-                max_pts = gold_segment_standings["Segment Points"].max()
-                min_pts = gold_segment_standings["Segment Points"].min()
-                top_users = ", ".join(
-                    gold_segment_standings.loc[
-                        gold_segment_standings["Segment Points"] == max_pts, "User"
-                    ].astype(str)
-                )
-                bottom_users = ", ".join(
-                    gold_segment_standings.loc[
-                        gold_segment_standings["Segment Points"] == min_pts, "User"
-                    ].astype(str)
-                )
-                top_title = "Champions" if ", " in top_users else "Champion"
-                bottom_title = "Recipients" if ", " in bottom_users else "Recipient"
-                st.markdown(
-                    f"### {active_segment_label}: 🏆 Gnomore Lossus {top_title} — **{top_users} ({int(max_pts)} pts)**"
-                )
-                st.markdown(
-                    f"### {active_segment_label}: 🥄 Wooden Spoon {bottom_title} — **{bottom_users} ({int(min_pts)} pts)**"
-                )
+                top_award, bottom_award = _segment_award_details(gold_segment_standings)
+                if top_award and bottom_award:
+                    st.markdown(
+                        f"### {active_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
+                    )
+                    if top_award["tie_broken"]:
+                        st.caption("*(Tie-breaker: Closest to total segment goals)*")
+                    st.markdown(
+                        f"### {active_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
+                    )
+                    if bottom_award["tie_broken"]:
+                        st.caption("*(Tie-breaker: Closest to total segment goals)*")
             else:
                 st.info("Segment trophies will appear once the active segment has completed matches.")
 
@@ -1207,6 +1247,8 @@ with faq_tab:
                 Wooden Spoon Trophy: For the person at the bottom of the segment leaderboard.
                 
                 Note: Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
+
+                Tie-Breaker Rule: If points are tied at the end of a segment, the winner is the person whose total predicted goals for all segment matches was closest to the actual total goals scored (the lower absolute difference wins).
                 """
             )
         else:
@@ -1219,6 +1261,8 @@ with faq_tab:
                 Following Segments: Every 4 matches thereafter.
                 
                 Note: Everyone starts at 0 at the beginning of a new segment, but your season total keeps climbing.
+
+                Tie-Breaker Rule: If points are tied at the end of a segment, the winner is the person whose total predicted goals for all segment matches was closest to the actual total goals scored (the lower absolute difference wins).
                 """
             )
 
