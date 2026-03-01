@@ -327,17 +327,37 @@ def load_predictions(conn: GSheetsConnection) -> pd.DataFrame:
             predictions = conn.read(worksheet="predictions", ttl=0)
         if predictions is None:
             return pd.DataFrame()
-        return predictions
+
+        required_cols = ["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]
+        predictions = predictions.reindex(columns=required_cols).copy()
+        predictions["user_name"] = predictions["user_name"].astype(str)
+        predictions["match_id"] = predictions["match_id"].astype(str)
+        predictions["submitted_at"] = pd.to_datetime(predictions["submitted_at"], errors="coerce", utc=True)
+        predictions = predictions.sort_values("submitted_at").drop_duplicates(
+            subset=["user_name", "match_id"],
+            keep="last",
+        )
+        return predictions.reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
 
 
 def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None:
+    if predictions is None or predictions.empty:
+        return
+
+    output = predictions[["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]].copy()
+    output = output.fillna("")
+    rows = output.values.tolist()
+
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
-        service_account_client.update(worksheet="predictions", data=predictions)
+        worksheet = service_account_client._open_spreadsheet().worksheet("predictions")
+        worksheet.append_rows(rows)
         return
-    conn.update(worksheet="predictions", data=predictions)
+
+    worksheet = conn.client.open_by_key(conn._spreadsheet).worksheet("predictions")
+    worksheet.append_rows(rows)
 
 
 def load_actual_results(conn: GSheetsConnection) -> pd.DataFrame:
@@ -433,48 +453,10 @@ def _build_service_account_client() -> Optional[GSheetsServiceAccountClient]:
 def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool:
     required_cols = ["submitted_at", "user_name", "match_id", "pred_home", "pred_away"]
     try:
-        predictions = load_predictions(conn)
-        original_row_count = len(predictions)
-
-        if original_row_count == 0:
-            predictions_retry = load_predictions(conn)
-            if predictions_retry is not None and not predictions_retry.empty:
-                raise Exception("Sync mismatch detected")
-
-        predictions = predictions.reindex(columns=required_cols).copy()
-        original_user_names = set(predictions["user_name"].dropna().astype(str).unique())
-
         row_df = pd.DataFrame([row]).reindex(columns=required_cols)
-        row_match_id = str(row_df.loc[0, "match_id"])
-        row_user_name = str(row_df.loc[0, "user_name"])
-
-        if predictions.empty:
-            updated = row_df.copy()
-        else:
-            predictions["user_name"] = predictions["user_name"].astype(str)
-            predictions["match_id"] = predictions["match_id"].astype(str)
-
-            existing_row_mask = (predictions["user_name"] == row_user_name) & (
-                predictions["match_id"] == row_match_id
-            )
-            filtered_predictions = predictions.loc[~existing_row_mask].copy()
-            updated = pd.concat([filtered_predictions, row_df], ignore_index=True)
-
-        updated["user_name"] = updated["user_name"].astype(str)
-        updated["match_id"] = updated["match_id"].astype(str)
-        updated = updated[required_cols].copy()
-        updated = updated.drop_duplicates(subset=["user_name", "match_id"], keep="last").reset_index(drop=True)
-
-        if original_row_count >= 1 and len(updated) < original_row_count:
-            st.error("Sync error: Predicted data mismatch. Please try saving again.")
-            return False
-
-        updated_user_names = set(updated["user_name"].dropna().astype(str).unique())
-        if not original_user_names.issubset(updated_user_names):
-            st.error("Sync error: Predicted data mismatch. Please try saving again.")
-            return False
-
-        save_predictions(conn, updated)
+        row_df["user_name"] = row_df["user_name"].astype(str)
+        row_df["match_id"] = row_df["match_id"].astype(str)
+        save_predictions(conn, row_df)
         return True
     except Exception as exc:
         st.error(f"Sync error: {exc}. Please try saving again.")
