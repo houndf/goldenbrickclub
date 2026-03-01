@@ -674,6 +674,8 @@ if scored_predictions.empty:
     standings = pd.DataFrame(columns=["Rank", "User", "Total Points"])
     active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
     active_segment_label: Optional[str] = None
+    trophy_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+    trophy_segment_label: Optional[str] = None
 else:
     standings = (
         scored_predictions.groupby("user_name", dropna=True, as_index=False)["points_earned"]
@@ -688,6 +690,38 @@ else:
 
     active_segment_label = None
     active_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+    trophy_segment_standings = pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+    trophy_segment_label = None
+
+    scored_predictions["goal_diff"] = (
+        (
+            pd.to_numeric(scored_predictions["pred_home"], errors="coerce")
+            + pd.to_numeric(scored_predictions["pred_away"], errors="coerce")
+        )
+        - (
+            pd.to_numeric(scored_predictions["home_score"], errors="coerce")
+            + pd.to_numeric(scored_predictions["away_score"], errors="coerce")
+        )
+    ).abs()
+
+    def build_segment_standings(segment_rows: pd.DataFrame) -> pd.DataFrame:
+        if segment_rows.empty:
+            return pd.DataFrame(columns=["Rank", "User", "Segment Points", "Accuracy Offset"])
+
+        grouped_standings = (
+            segment_rows.groupby("user_name", dropna=True, as_index=False)
+            .agg({"points_earned": "sum", "goal_diff": "sum"})
+            .sort_values(["points_earned", "goal_diff"], ascending=[False, True])
+            .reset_index(drop=True)
+        )
+        grouped_standings["Rank"] = grouped_standings.index + 1
+        return grouped_standings.rename(
+            columns={
+                "user_name": "User",
+                "points_earned": "Segment Points",
+                "goal_diff": "Accuracy Offset",
+            }
+        )[["Rank", "User", "Segment Points", "Accuracy Offset"]]
 
     if not match_segments.empty:
         active_segment = pd.NA
@@ -705,34 +739,19 @@ else:
         if pd.notna(active_segment):
             active_segment_label = f"Segment {int(active_segment)}"
             scored_segment_rows = scored_predictions[scored_predictions["segment"] == active_segment].copy()
-            if not scored_segment_rows.empty:
-                active_segment_standings = (
-                    scored_segment_rows.groupby("user_name", dropna=True, as_index=False).agg(
-                        {
-                            "points_earned": "sum",
-                            "pred_total_goals": "sum",
-                            "actual_total_goals": "sum",
-                        }
-                    )
-                )
-                active_segment_standings["accuracy_offset"] = (
-                    active_segment_standings["pred_total_goals"]
-                    - active_segment_standings["actual_total_goals"]
-                ).abs()
-                active_segment_standings = (
-                    active_segment_standings.sort_values(
-                        ["points_earned", "accuracy_offset"], ascending=[False, True]
-                    )
-                    .reset_index(drop=True)
-                )
-                active_segment_standings["Rank"] = active_segment_standings.index + 1
-                active_segment_standings = active_segment_standings.rename(
-                    columns={
-                        "user_name": "User",
-                        "points_earned": "Segment Points",
-                        "accuracy_offset": "Accuracy Offset",
-                    }
-                )[["Rank", "User", "Segment Points", "Accuracy Offset"]]
+            active_segment_standings = build_segment_standings(scored_segment_rows)
+
+        trophy_segment_standings = active_segment_standings.copy()
+        trophy_segment_label = active_segment_label
+
+        if trophy_segment_standings.empty:
+            completed_segments = sorted(scored_predictions["segment"].dropna().unique())
+            if completed_segments:
+                fallback_segment = completed_segments[-1]
+                fallback_rows = scored_predictions[scored_predictions["segment"] == fallback_segment].copy()
+                trophy_segment_standings = build_segment_standings(fallback_rows)
+                if not trophy_segment_standings.empty:
+                    trophy_segment_label = f"Segment {int(fallback_segment)}"
 
 
 def _segment_award_details(
@@ -744,23 +763,20 @@ def _segment_award_details(
     top_row = segment_standings.iloc[0]
     bottom_row = segment_standings.iloc[-1]
 
-    top_tied_rows = segment_standings[segment_standings["Segment Points"] == top_row["Segment Points"]]
-    bottom_tied_rows = segment_standings[segment_standings["Segment Points"] == bottom_row["Segment Points"]]
-
-    top_tie_broken = len(top_tied_rows) > 1 and top_tied_rows["Accuracy Offset"].nunique(dropna=True) > 1
-    bottom_tie_broken = (
-        len(bottom_tied_rows) > 1 and bottom_tied_rows["Accuracy Offset"].nunique(dropna=True) > 1
+    top_two_tied_on_points = (
+        len(segment_standings) > 1
+        and int(segment_standings.iloc[0]["Segment Points"]) == int(segment_standings.iloc[1]["Segment Points"])
     )
 
     top_details = {
         "user": str(top_row["User"]),
         "points": int(top_row["Segment Points"]),
-        "tie_broken": bool(top_tie_broken),
+        "offset": int(top_row["Accuracy Offset"]),
+        "tie_broken": bool(top_two_tied_on_points),
     }
     bottom_details = {
         "user": str(bottom_row["User"]),
         "points": int(bottom_row["Segment Points"]),
-        "tie_broken": bool(bottom_tie_broken),
     }
     return top_details, bottom_details
 
@@ -885,21 +901,19 @@ with matches_tab:
 
 with leaderboard_tab:
     if current_user_extra_gold:
-        if active_segment_label and not active_segment_standings.empty:
-            top_award, bottom_award = _segment_award_details(active_segment_standings)
+        if trophy_segment_label and not trophy_segment_standings.empty:
+            top_award, bottom_award = _segment_award_details(trophy_segment_standings)
             if top_award and bottom_award:
                 st.markdown(
-                    f"### {active_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
+                    f"### {trophy_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
                 )
                 if top_award["tie_broken"]:
-                    st.caption("*(Tie-breaker: Closest to total segment goals)*")
+                    st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
                 st.markdown(
-                    f"### {active_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
+                    f"### {trophy_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
                 )
-                if bottom_award["tie_broken"]:
-                    st.caption("*(Tie-breaker: Closest to total segment goals)*")
         else:
-            st.info("Segment trophies will appear once the active segment has completed matches.")
+            st.info("Segment trophies will appear once a segment has completed matches.")
     else:
         st.info("Segment awards and trophies are exclusive to Extra Gold members.")
 
@@ -942,27 +956,32 @@ if extra_gold_tab is not None:
                 .copy()
                 .reset_index(drop=True)
             )
+            gold_trophy_segment_standings = (
+                trophy_segment_standings[trophy_segment_standings["User"].astype(str).isin(gold_users)]
+                .copy()
+                .reset_index(drop=True)
+            )
 
             if not gold_standings.empty:
                 gold_standings["Rank"] = gold_standings.index + 1
             if not gold_segment_standings.empty:
                 gold_segment_standings["Rank"] = gold_segment_standings.index + 1
+            if not gold_trophy_segment_standings.empty:
+                gold_trophy_segment_standings["Rank"] = gold_trophy_segment_standings.index + 1
 
-            if active_segment_label and not gold_segment_standings.empty:
-                top_award, bottom_award = _segment_award_details(gold_segment_standings)
+            if trophy_segment_label and not gold_trophy_segment_standings.empty:
+                top_award, bottom_award = _segment_award_details(gold_trophy_segment_standings)
                 if top_award and bottom_award:
                     st.markdown(
-                        f"### {active_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
+                        f"### {trophy_segment_label}: 🏆 Gnomore Lossus Champion — **{top_award['user']} ({top_award['points']} pts)**"
                     )
                     if top_award["tie_broken"]:
-                        st.caption("*(Tie-breaker: Closest to total segment goals)*")
+                        st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
                     st.markdown(
-                        f"### {active_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
+                        f"### {trophy_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
                     )
-                    if bottom_award["tie_broken"]:
-                        st.caption("*(Tie-breaker: Closest to total segment goals)*")
             else:
-                st.info("Segment trophies will appear once the active segment has completed matches.")
+                st.info("Segment trophies will appear once a segment has completed matches.")
 
             st.divider()
             st.markdown("### Season Standings")
