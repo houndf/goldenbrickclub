@@ -53,6 +53,7 @@ def load_users() -> dict[str, str]:
     return users
 
 
+@st.cache_data(ttl=60)
 def load_users_full() -> pd.DataFrame:
     """Load user metadata from the users worksheet."""
     service_account_client = _build_service_account_client()
@@ -275,6 +276,7 @@ def load_mls_atlanta_fixtures() -> pd.DataFrame:
     return fixtures_df.sort_values("match_kickoff").reset_index(drop=True)
 
 
+@st.cache_data(ttl=60)
 def load_schedule_from_json() -> pd.DataFrame:
     """Load the full season schedule from schedule.json (kickoff times in ET)."""
     if not SCHEDULE_FILE.exists():
@@ -318,6 +320,13 @@ def load_schedule_from_json() -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("match_kickoff").reset_index(drop=True)
 
 
+@st.cache_data(
+    ttl=60,
+    hash_funcs={
+        GSheetsConnection: lambda _: "gsheets_connection",
+        GSheetsServiceAccountClient: lambda _: "service_account_client",
+    },
+)
 def load_predictions(conn: GSheetsConnection) -> pd.DataFrame:
     service_account_client = _build_service_account_client()
     try:
@@ -352,8 +361,13 @@ def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None
 
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
-        worksheet = service_account_client._open_spreadsheet().worksheet("predictions")
+        if hasattr(service_account_client, "_open_spreadsheet"):
+            worksheet = service_account_client._open_spreadsheet().worksheet("predictions")
+        else:
+            spreadsheet_id = getattr(service_account_client, "_spreadsheet", "")
+            worksheet = service_account_client.client.open_by_key(spreadsheet_id).worksheet("predictions")
         worksheet.append_rows(rows)
+        load_predictions.clear()
         return
 
     if hasattr(conn.client, "_open_spreadsheet"):
@@ -361,8 +375,16 @@ def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None
     else:
         worksheet = conn.client.open_by_key(conn._spreadsheet).worksheet("predictions")
     worksheet.append_rows(rows)
+    load_predictions.clear()
 
 
+@st.cache_data(
+    ttl=60,
+    hash_funcs={
+        GSheetsConnection: lambda _: "gsheets_connection",
+        GSheetsServiceAccountClient: lambda _: "service_account_client",
+    },
+)
 def load_actual_results(conn: GSheetsConnection) -> pd.DataFrame:
     """Load match results from the fixtures worksheet."""
     service_account_client = _build_service_account_client()
@@ -394,11 +416,27 @@ def save_actual_results(conn: GSheetsConnection, fixtures: pd.DataFrame) -> None
     output = fixtures.copy()
     output["match_id"] = output["match_id"].astype(str)
     output["is_finished"] = output["is_finished"].fillna(False).astype(bool)
+    values = [output.columns.tolist(), *output.fillna("").values.tolist()]
+
     service_account_client = _build_service_account_client()
     if service_account_client is not None:
-        service_account_client.update(worksheet="fixtures", data=output)
+        if hasattr(service_account_client, "_open_spreadsheet"):
+            worksheet = service_account_client._open_spreadsheet().worksheet("fixtures")
+        else:
+            spreadsheet_id = getattr(service_account_client, "_spreadsheet", "")
+            worksheet = service_account_client.client.open_by_key(spreadsheet_id).worksheet("fixtures")
+        worksheet.clear()
+        worksheet.update(values=values, range_name="A1")
+        load_actual_results.clear()
         return
-    conn.update(worksheet="fixtures", data=output)
+
+    if hasattr(conn.client, "_open_spreadsheet"):
+        worksheet = conn.client._open_spreadsheet().worksheet("fixtures")
+    else:
+        worksheet = conn.client.open_by_key(conn._spreadsheet).worksheet("fixtures")
+    worksheet.clear()
+    worksheet.update(values=values, range_name="A1")
+    load_actual_results.clear()
 
 
 def load_fixtures_reference(conn: GSheetsConnection, schedule_df: pd.DataFrame) -> pd.DataFrame:
@@ -523,9 +561,10 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 
 st.title("⚽ Golden Brick Club")
 st.caption("Atlanta United MLS Prediction League")
-users_df = load_users_full()
+users_df = pd.DataFrame()
 
 with st.sidebar:
+    users_df = load_users_full()
     st.header("User Access")
     st.session_state.setdefault("logged_in_user", None)
     st.session_state.setdefault("login_name", "")
