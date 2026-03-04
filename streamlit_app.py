@@ -356,7 +356,10 @@ def save_predictions(conn: GSheetsConnection, predictions: pd.DataFrame) -> None
         worksheet.append_rows(rows)
         return
 
-    worksheet = conn.client.open_by_key(conn._spreadsheet).worksheet("predictions")
+    if hasattr(conn.client, "_open_spreadsheet"):
+        worksheet = conn.client._open_spreadsheet().worksheet("predictions")
+    else:
+        worksheet = conn.client.open_by_key(conn._spreadsheet).worksheet("predictions")
     worksheet.append_rows(rows)
 
 
@@ -790,24 +793,44 @@ def _segment_award_details(
 
 
 def _build_honorable_mentions(
-    segment_standings: pd.DataFrame,
+    standings_df: pd.DataFrame,
+    points_column: str,
+    offset_column: str,
+    user_column: str,
     target_points: int,
     target_offset: int,
     offset_operator: str,
 ) -> list[str]:
-    if segment_standings.empty:
+    if standings_df.empty:
         return []
 
-    tied_rows = segment_standings[segment_standings["Segment Points"] == target_points].copy()
+    tied_rows = standings_df[standings_df[points_column] == target_points].copy()
     if offset_operator == "higher":
-        tied_rows = tied_rows[tied_rows["Accuracy Offset"] > target_offset]
+        tied_rows = tied_rows[tied_rows[offset_column] > target_offset]
     else:
-        tied_rows = tied_rows[tied_rows["Accuracy Offset"] < target_offset]
+        tied_rows = tied_rows[tied_rows[offset_column] < target_offset]
 
     if tied_rows.empty:
         return []
 
-    return [f"{row['User']} (Offset: {int(row['Accuracy Offset'])})" for _, row in tied_rows.iterrows()]
+    return [f"{row[user_column]} (Offset: {int(row[offset_column])})" for _, row in tied_rows.iterrows()]
+
+
+def _season_award_details(season_standings: pd.DataFrame) -> Optional[dict[str, Any]]:
+    if season_standings.empty:
+        return None
+
+    top_row = season_standings.iloc[0]
+    top_two_tied_on_points = (
+        len(season_standings) > 1
+        and int(season_standings.iloc[0]["Total Points"]) == int(season_standings.iloc[1]["Total Points"])
+    )
+    return {
+        "user": str(top_row["User"]),
+        "points": int(top_row["Total Points"]),
+        "offset": int(top_row["Accuracy Offset"]),
+        "tie_broken": bool(top_two_tied_on_points),
+    }
 
 current_user_data = get_user_data(active_user_name)
 current_user_extra_gold = (
@@ -940,6 +963,9 @@ with leaderboard_tab:
                     st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
                 top_honorable_mentions = _build_honorable_mentions(
                     trophy_segment_standings,
+                    "Segment Points",
+                    "Accuracy Offset",
+                    "User",
                     top_award["points"],
                     top_award["offset"],
                     "higher",
@@ -958,6 +984,29 @@ with leaderboard_tab:
     if standings.empty:
         st.info("No prediction data available for leaderboard standings yet.")
     else:
+        season_award = _season_award_details(standings)
+        if season_award:
+            st.markdown(
+                f"#### 🏆 Season Leader — {season_award['user']} ({season_award['points']} pts)."
+            )
+            if season_award["tie_broken"]:
+                st.caption(
+                    f"*(Won by tie-breaker: Lowest season-long Accuracy Offset — Offset: {season_award['offset']})*"
+                )
+            season_honorable_mentions = _build_honorable_mentions(
+                standings,
+                "Total Points",
+                "Accuracy Offset",
+                "User",
+                season_award["points"],
+                season_award["offset"],
+                "higher",
+            )
+            if season_honorable_mentions:
+                st.caption(
+                    f"*Honorable Mention (Tied on points): {', '.join(season_honorable_mentions)}*."
+                )
+
         st.dataframe(standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
     segment_table_header = "### Segment Standings"
@@ -1015,6 +1064,9 @@ if extra_gold_tab is not None:
                         st.caption(f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*")
                     top_honorable_mentions = _build_honorable_mentions(
                         gold_trophy_segment_standings,
+                        "Segment Points",
+                        "Accuracy Offset",
+                        "User",
                         top_award["points"],
                         top_award["offset"],
                         "higher",
@@ -1028,6 +1080,9 @@ if extra_gold_tab is not None:
                     )
                     bottom_honorable_mentions = _build_honorable_mentions(
                         gold_trophy_segment_standings,
+                        "Segment Points",
+                        "Accuracy Offset",
+                        "User",
                         bottom_award["points"],
                         bottom_award["offset"],
                         "lower",
@@ -1044,6 +1099,29 @@ if extra_gold_tab is not None:
             if gold_standings.empty:
                 st.info("No Extra Gold member points are available for season standings yet.")
             else:
+                season_award = _season_award_details(gold_standings)
+                if season_award:
+                    st.markdown(
+                        f"#### 🏆 Season Leader — **{season_award['user']} ({season_award['points']} pts)**"
+                    )
+                    if season_award["tie_broken"]:
+                        st.caption(
+                            f"*(Won by tie-breaker: Lowest season-long Accuracy Offset — Offset: {season_award['offset']})*"
+                        )
+                    season_honorable_mentions = _build_honorable_mentions(
+                        gold_standings,
+                        "Total Points",
+                        "Accuracy Offset",
+                        "User",
+                        season_award["points"],
+                        season_award["offset"],
+                        "higher",
+                    )
+                    if season_honorable_mentions:
+                        st.caption(
+                            f"*Honorable Mention (Tied on points): {', '.join(season_honorable_mentions)}*."
+                        )
+
                 st.dataframe(gold_standings[["Rank", "User", "Total Points"]], use_container_width=True, hide_index=True)
 
             segment_table_header = "### Segment Standings"
