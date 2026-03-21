@@ -960,17 +960,96 @@ else:
         ]
 
 
+def _segment_status_titles(is_active_segment: bool) -> tuple[str, str, str]:
+    winner_title = "Current Leader" if is_active_segment else "Champion"
+    loser_title = "Current Recipient" if is_active_segment else "Recipient"
+    honorable_mention_title = (
+        "Honorable Mention (Tied for lead)"
+        if is_active_segment
+        else "Honorable Mention (Tied on points)"
+    )
+    return winner_title, loser_title, honorable_mention_title
+
+
+def _render_segment_archive_awards(
+    segment_label: str,
+    segment_standings: pd.DataFrame,
+    award_style: str,
+) -> None:
+    top_award, bottom_award = _segment_award_details(segment_standings)
+    if not top_award:
+        return
+
+    winner_title, loser_title, honorable_mention_title = _segment_status_titles(
+        is_active_segment=False
+    )
+
+    if award_style == "extra_gold":
+        st.markdown(
+            f"#### {segment_label} Gnomore Lossus {winner_title}: 🏆 {top_award['user']} ({top_award['points']} pts)."
+        )
+    else:
+        st.markdown(
+            f"#### {segment_label} Winner: 🏆 {top_award['user']} ({top_award['points']} pts)."
+        )
+
+    if top_award["tie_broken"]:
+        st.caption(
+            f"*(Won by tie-breaker: Closest to total segment goals — Offset: {top_award['offset']})*"
+        )
+
+    top_honorable_mentions = _build_honorable_mentions(
+        segment_standings,
+        "Segment Points",
+        "Accuracy Offset",
+        "User",
+        top_award["points"],
+        top_award["offset"],
+        "higher",
+    )
+    if top_honorable_mentions:
+        st.caption(
+            f"*{honorable_mention_title}: {', '.join(top_honorable_mentions)}*."
+        )
+
+    if award_style != "extra_gold" or not bottom_award:
+        return
+
+    st.markdown(
+        f"#### {segment_label} Wooden Spoon {loser_title}: 🥄 {bottom_award['user']} ({bottom_award['points']} pts)."
+    )
+    bottom_honorable_mentions = _build_honorable_mentions(
+        segment_standings,
+        "Segment Points",
+        "Accuracy Offset",
+        "User",
+        bottom_award["points"],
+        bottom_award["offset"],
+        "lower",
+    )
+    if bottom_honorable_mentions:
+        st.caption(
+            f"*Honorable Mention (Tied on points): {', '.join(bottom_honorable_mentions)}*."
+        )
+
+
 def render_segment_archive(
     archive_segment_labels: list[str],
     scored_rows: pd.DataFrame,
     trophy_label: Optional[str],
     allowed_users: Optional[set[str]] = None,
     empty_message: str = "No prior scored segments are available yet.",
+    award_style: str = "leaderboard",
 ) -> None:
     st.markdown("### 📚 Segment Archive")
     prior_segment_labels = [
         label for label in archive_segment_labels if label != trophy_label
     ]
+    prior_segment_labels = sorted(
+        prior_segment_labels,
+        key=lambda label: pd.to_numeric(label.replace("Segment ", ""), errors="coerce"),
+        reverse=True,
+    )
 
     if allowed_users is not None:
         scored_rows = scored_rows[
@@ -995,6 +1074,7 @@ def render_segment_archive(
             continue
 
         rendered_segment = True
+        _render_segment_archive_awards(segment_label, segment_standings, award_style)
         with st.expander(f"{segment_label} Standings"):
             st.dataframe(
                 segment_standings[["Rank", "User", "Segment Points"]],
@@ -1219,13 +1299,8 @@ with leaderboard_tab:
         if trophy_segment_label and not trophy_segment_standings.empty:
             top_award, _ = _segment_award_details(trophy_segment_standings)
             if top_award:
-                segment_title = (
-                    "Champion" if trophy_segment_is_completed else "Current Leader"
-                )
-                honorable_mention_title = (
-                    "Honorable Mention (Tied on points)"
-                    if trophy_segment_is_completed
-                    else "Honorable Mention (Tied for lead)"
+                segment_title, _, honorable_mention_title = _segment_status_titles(
+                    is_active_segment=not trophy_segment_is_completed
                 )
                 st.markdown(
                     f"### {trophy_segment_label}: 🏆 {segment_title} — {top_award['user']} ({top_award['points']} pts)."
@@ -1255,7 +1330,10 @@ with leaderboard_tab:
         st.info("Segment awards and trophies are exclusive to Extra Gold members.")
 
     render_segment_archive(
-        scored_segment_labels, scored_predictions, trophy_segment_label
+        scored_segment_labels,
+        scored_predictions,
+        trophy_segment_label,
+        award_style="leaderboard",
     )
 
     st.divider()
@@ -1362,13 +1440,8 @@ if extra_gold_tab is not None:
                     gold_trophy_segment_standings
                 )
                 if top_award and bottom_award:
-                    gold_segment_title = (
-                        "Champion" if trophy_segment_is_completed else "Current Leader"
-                    )
-                    gold_honorable_mention_title = (
-                        "Honorable Mention (Tied on points)"
-                        if trophy_segment_is_completed
-                        else "Honorable Mention (Tied for lead)"
+                    gold_segment_title, wooden_spoon_title, gold_honorable_mention_title = _segment_status_titles(
+                        is_active_segment=not trophy_segment_is_completed
                     )
                     st.markdown(
                         f"### {trophy_segment_label}: 🏆 Gnomore Lossus {gold_segment_title} — **{top_award['user']} ({top_award['points']} pts)**"
@@ -1391,7 +1464,7 @@ if extra_gold_tab is not None:
                             f"*{gold_honorable_mention_title}: {', '.join(top_honorable_mentions)}*."
                         )
                     st.markdown(
-                        f"### {trophy_segment_label}: 🥄 Wooden Spoon Recipient — **{bottom_award['user']} ({bottom_award['points']} pts)**"
+                        f"### {trophy_segment_label}: 🥄 Wooden Spoon {wooden_spoon_title} — **{bottom_award['user']} ({bottom_award['points']} pts)**"
                     )
                     bottom_honorable_mentions = _build_honorable_mentions(
                         gold_trophy_segment_standings,
@@ -1417,6 +1490,7 @@ if extra_gold_tab is not None:
                 trophy_segment_label,
                 allowed_users=gold_users,
                 empty_message="No prior Extra Gold segment archives are available yet.",
+                award_style="extra_gold",
             )
 
             st.divider()
