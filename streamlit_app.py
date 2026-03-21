@@ -964,16 +964,24 @@ def render_segment_archive(
     archive_segment_labels: list[str],
     scored_rows: pd.DataFrame,
     trophy_label: Optional[str],
+    allowed_users: Optional[set[str]] = None,
+    empty_message: str = "No prior scored segments are available yet.",
 ) -> None:
     st.markdown("### 📚 Segment Archive")
     prior_segment_labels = [
         label for label in archive_segment_labels if label != trophy_label
     ]
 
+    if allowed_users is not None:
+        scored_rows = scored_rows[
+            scored_rows["user_name"].astype(str).isin(allowed_users)
+        ].copy()
+
     if not prior_segment_labels:
-        st.info("No prior scored segments are available yet.")
+        st.info(empty_message)
         return
 
+    rendered_segment = False
     for segment_label in prior_segment_labels:
         segment_number = pd.to_numeric(
             segment_label.replace("Segment ", ""), errors="coerce"
@@ -986,12 +994,16 @@ def render_segment_archive(
         if segment_standings.empty:
             continue
 
+        rendered_segment = True
         with st.expander(f"{segment_label} Standings"):
             st.dataframe(
                 segment_standings[["Rank", "User", "Segment Points"]],
                 use_container_width=True,
                 hide_index=True,
             )
+
+    if not rendered_segment:
+        st.info(empty_message)
 
 
 def _segment_award_details(
@@ -1400,7 +1412,11 @@ if extra_gold_tab is not None:
                 )
 
             render_segment_archive(
-                scored_segment_labels, scored_predictions, trophy_segment_label
+                scored_segment_labels,
+                scored_predictions,
+                trophy_segment_label,
+                allowed_users=gold_users,
+                empty_message="No prior Extra Gold segment archives are available yet.",
             )
 
             st.divider()
