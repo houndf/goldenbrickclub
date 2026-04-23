@@ -512,6 +512,7 @@ def load_fixtures_reference(
 
     if "segment" not in base.columns:
         base["segment"] = pd.NA
+    base["segment"] = pd.to_numeric(base["segment"], errors="coerce").ffill().fillna(1)
     if "kickoff_et" not in base.columns:
         kickoff_et_series = pd.to_datetime(base.get("match_kickoff"), utc=True, errors="coerce")
         base["kickoff_et"] = kickoff_et_series.dt.tz_convert(EASTERN_TZ).dt.strftime(
@@ -522,16 +523,22 @@ def load_fixtures_reference(
     base["match_id"] = base["match_id"].astype(str)
     sheet_fixtures = load_actual_results(conn)
     if sheet_fixtures.empty:
-        base["home_score"] = pd.NA
-        base["away_score"] = pd.NA
+        base["final_home"] = pd.to_numeric(base.get("final_home"), errors="coerce")
+        base["final_away"] = pd.to_numeric(base.get("final_away"), errors="coerce")
         base["is_finished"] = False
         return base
 
     merged = base.merge(
         sheet_fixtures, on="match_id", how="left", suffixes=("", "_sheet")
     )
+    merged["segment"] = pd.to_numeric(merged["segment"], errors="coerce").ffill().fillna(1)
+    merged["final_home"] = pd.to_numeric(merged.get("final_home"), errors="coerce")
+    merged["final_away"] = pd.to_numeric(merged.get("final_away"), errors="coerce")
     merged["home_score"] = pd.to_numeric(merged.get("home_score"), errors="coerce")
     merged["away_score"] = pd.to_numeric(merged.get("away_score"), errors="coerce")
+    merged["final_home"] = merged["home_score"].fillna(merged["final_home"])
+    merged["final_away"] = merged["away_score"].fillna(merged["final_away"])
+    merged = merged.drop(columns=["home_score", "away_score"], errors="ignore")
     merged["is_finished"] = merged["is_finished"].fillna(False).astype(bool)
     return merged
 
@@ -628,9 +635,6 @@ def build_recent_results(fixtures_reference_df: pd.DataFrame) -> pd.DataFrame:
     if merged.empty:
         return pd.DataFrame()
 
-    merged = merged.rename(
-        columns={"home_score": "final_home", "away_score": "final_away"}
-    )
     return (
         merged.sort_values("match_kickoff", ascending=False)
         .head(10)
