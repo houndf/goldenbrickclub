@@ -493,10 +493,31 @@ def save_actual_results(conn: GSheetsConnection, fixtures: pd.DataFrame) -> None
 def load_fixtures_reference(
     conn: GSheetsConnection, schedule_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Build fixtures reference by merging schedule.json and fixtures worksheet on match_id."""
+    """Build fixtures reference from schedule.json + API fixtures, then merge sheet results."""
     base = schedule_df.copy()
+    api_fixtures = load_mls_atlanta_fixtures()
+
+    if base.empty and api_fixtures.empty:
+        return pd.DataFrame()
+
     if base.empty:
-        return base
+        base = api_fixtures.copy()
+    elif not api_fixtures.empty:
+        base = pd.concat([base, api_fixtures], ignore_index=True, sort=False)
+        base = (
+            base.sort_values("match_kickoff")
+            .drop_duplicates(subset=["match_id"], keep="first")
+            .reset_index(drop=True)
+        )
+
+    if "segment" not in base.columns:
+        base["segment"] = pd.NA
+    if "kickoff_et" not in base.columns:
+        kickoff_et_series = pd.to_datetime(base.get("match_kickoff"), utc=True, errors="coerce")
+        base["kickoff_et"] = kickoff_et_series.dt.tz_convert(EASTERN_TZ).dt.strftime(
+            "%Y-%m-%d %I:%M %p ET"
+        )
+        base["kickoff_et"] = base["kickoff_et"].fillna("TBD")
 
     base["match_id"] = base["match_id"].astype(str)
     sheet_fixtures = load_actual_results(conn)
@@ -1006,6 +1027,7 @@ def _render_segment_archive_awards(
         top_award["points"],
         top_award["offset"],
         "higher",
+        excluded_user=top_award["user"],
     )
     if top_honorable_mentions:
         st.caption(
@@ -1026,6 +1048,7 @@ def _render_segment_archive_awards(
         bottom_award["points"],
         bottom_award["offset"],
         "lower",
+        excluded_user=bottom_award["user"],
     )
     if bottom_honorable_mentions:
         st.caption(
@@ -1121,15 +1144,19 @@ def _build_honorable_mentions(
     target_points: int,
     target_offset: int,
     offset_operator: str,
+    excluded_user: Optional[str] = None,
 ) -> list[str]:
     if standings_df.empty:
         return []
 
     tied_rows = standings_df[standings_df[points_column] == target_points].copy()
     if offset_operator == "higher":
-        tied_rows = tied_rows[tied_rows[offset_column] > target_offset]
+        tied_rows = tied_rows[tied_rows[offset_column] >= target_offset]
     else:
-        tied_rows = tied_rows[tied_rows[offset_column] < target_offset]
+        tied_rows = tied_rows[tied_rows[offset_column] <= target_offset]
+
+    if excluded_user is not None:
+        tied_rows = tied_rows[tied_rows[user_column].astype(str) != str(excluded_user)]
 
     if tied_rows.empty:
         return []
@@ -1317,6 +1344,7 @@ with leaderboard_tab:
                     top_award["points"],
                     top_award["offset"],
                     "higher",
+                    excluded_user=top_award["user"],
                 )
                 if top_honorable_mentions:
                     st.caption(
@@ -1358,6 +1386,7 @@ with leaderboard_tab:
                 season_award["points"],
                 season_award["offset"],
                 "higher",
+                excluded_user=season_award["user"],
             )
             if season_honorable_mentions:
                 st.caption(
@@ -1458,6 +1487,7 @@ if extra_gold_tab is not None:
                         top_award["points"],
                         top_award["offset"],
                         "higher",
+                        excluded_user=top_award["user"],
                     )
                     if top_honorable_mentions:
                         st.caption(
@@ -1474,6 +1504,7 @@ if extra_gold_tab is not None:
                         bottom_award["points"],
                         bottom_award["offset"],
                         "lower",
+                        excluded_user=bottom_award["user"],
                     )
                     if bottom_honorable_mentions:
                         st.caption(
@@ -1517,6 +1548,7 @@ if extra_gold_tab is not None:
                         season_award["points"],
                         season_award["offset"],
                         "higher",
+                        excluded_user=season_award["user"],
                     )
                     if season_honorable_mentions:
                         st.caption(
