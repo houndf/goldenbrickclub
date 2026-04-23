@@ -73,14 +73,22 @@
   },
   {
     "idEvent": "ATL26-10",
-    "strHomeTeam": "Atlanta United",
-    "strAwayTeam": "CF Montr\u00e9al",
-    "dateEvent": "2026-05-02",
-    "strTime": "19:30:00",
+    "strHomeTeam": "Toronto FC",
+    "strAwayTeam": "Atlanta United",
+    "dateEvent": "2026-04-25",
+    "strTime": "13:00:00",
     "segment": 3
   },
   {
     "idEvent": "ATL26-11",
+    "strHomeTeam": "Atlanta United",
+    "strAwayTeam": "CF Montréal",
+    "dateEvent": "2026-05-02",
+    "strTime": "19:30:00",
+    "segment": 4
+  },
+  {
+    "idEvent": "ATL26-12",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "LA Galaxy",
     "dateEvent": "2026-05-09",
@@ -88,7 +96,7 @@
     "segment": 4
   },
   {
-    "idEvent": "ATL26-12",
+    "idEvent": "ATL26-13",
     "strHomeTeam": "Orlando City SC",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-05-16",
@@ -96,7 +104,7 @@
     "segment": 4
   },
   {
-    "idEvent": "ATL26-13",
+    "idEvent": "ATL26-14",
     "strHomeTeam": "Columbus Crew",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-05-24",
@@ -104,15 +112,15 @@
     "segment": 4
   },
   {
-    "idEvent": "ATL26-14",
+    "idEvent": "ATL26-15",
     "strHomeTeam": "Nashville SC",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-07-17",
     "strTime": "20:00:00",
-    "segment": 4
+    "segment": 5
   },
   {
-    "idEvent": "ATL26-15",
+    "idEvent": "ATL26-16",
     "strHomeTeam": "Charlotte FC",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-07-22",
@@ -120,7 +128,7 @@
     "segment": 5
   },
   {
-    "idEvent": "ATL26-16",
+    "idEvent": "ATL26-17",
     "strHomeTeam": "New England Revolution",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-07-25",
@@ -128,7 +136,7 @@
     "segment": 5
   },
   {
-    "idEvent": "ATL26-17",
+    "idEvent": "ATL26-18",
     "strHomeTeam": "Philadelphia Union",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-08-01",
@@ -136,12 +144,12 @@
     "segment": 5
   },
   {
-    "idEvent": "ATL26-18",
+    "idEvent": "ATL26-19",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "New York Red Bulls",
     "dateEvent": "2026-08-15",
     "strTime": "19:30:00",
-    "segment": 5
+    "segment": 6
   },
   {
     "idEvent": "ATL26-19",
@@ -152,7 +160,7 @@
     "segment": 6
   },
   {
-    "idEvent": "ATL26-20",
+    "idEvent": "ATL26-21",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Sporting Kansas City",
     "dateEvent": "2026-08-23",
@@ -160,7 +168,7 @@
     "segment": 6
   },
   {
-    "idEvent": "ATL26-21",
+    "idEvent": "ATL26-22",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Charlotte FC",
     "dateEvent": "2026-08-29",
@@ -168,15 +176,15 @@
     "segment": 6
   },
   {
-    "idEvent": "ATL26-22",
+    "idEvent": "ATL26-23",
     "strHomeTeam": "Inter Miami",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-09-05",
     "strTime": "19:30:00",
-    "segment": 6
+    "segment": 7
   },
   {
-    "idEvent": "ATL26-23",
+    "idEvent": "ATL26-24",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Orlando City SC",
     "dateEvent": "2026-09-09",
@@ -184,7 +192,7 @@
     "segment": 7
   },
   {
-    "idEvent": "ATL26-24",
+    "idEvent": "ATL26-25",
     "strHomeTeam": "D.C. United",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-09-12",
@@ -192,7 +200,7 @@
     "segment": 7
   },
   {
-    "idEvent": "ATL26-25",
+    "idEvent": "ATL26-26",
     "strHomeTeam": "Portland Timbers",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-09-19",
@@ -200,15 +208,15 @@
     "segment": 7
   },
   {
-    "idEvent": "ATL26-26",
+    "idEvent": "ATL26-27",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "New York City FC",
     "dateEvent": "2026-09-26",
     "strTime": "19:30:00",
-    "segment": 7
+    "segment": 8
   },
   {
-    "idEvent": "ATL26-27",
+    "idEvent": "ATL26-28",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "FC Cincinnati",
     "dateEvent": "2026-10-10",
@@ -216,15 +224,15 @@
     "segment": 8
   },
   {
-    "idEvent": "ATL26-28",
-    "strHomeTeam": "CF Montr\u00e9al",
+    "idEvent": "ATL26-29",
+    "strHomeTeam": "CF Montréal",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-10-14",
     "strTime": "19:30:00",
     "segment": 8
   },
   {
-    "idEvent": "ATL26-29",
+    "idEvent": "ATL26-30",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Inter Miami",
     "dateEvent": "2026-10-17",
@@ -232,15 +240,15 @@
     "segment": 8
   },
   {
-    "idEvent": "ATL26-30",
+    "idEvent": "ATL26-31",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Chicago Fire FC",
     "dateEvent": "2026-10-24",
     "strTime": "19:30:00",
-    "segment": 8
+    "segment": 9
   },
   {
-    "idEvent": "ATL26-31",
+    "idEvent": "ATL26-32",
     "strHomeTeam": "New York City FC",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-10-28",
@@ -248,7 +256,7 @@
     "segment": 9
   },
   {
-    "idEvent": "ATL26-32",
+    "idEvent": "ATL26-33",
     "strHomeTeam": "Atlanta United",
     "strAwayTeam": "Toronto FC",
     "dateEvent": "2026-11-01",
@@ -256,7 +264,7 @@
     "segment": 9
   },
   {
-    "idEvent": "ATL26-33",
+    "idEvent": "ATL26-34",
     "strHomeTeam": "New York Red Bulls",
     "strAwayTeam": "Atlanta United",
     "dateEvent": "2026-11-07",
