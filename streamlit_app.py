@@ -500,45 +500,61 @@ def load_fixtures_reference(
     if base.empty and api_fixtures.empty:
         return pd.DataFrame()
 
+    base = pd.concat([base, api_fixtures], ignore_index=True, sort=False)
     if base.empty:
-        base = api_fixtures.copy()
-    elif not api_fixtures.empty:
-        base = pd.concat([base, api_fixtures], ignore_index=True, sort=False)
-        base = (
-            base.sort_values("match_kickoff")
-            .drop_duplicates(subset=["match_id"], keep="first")
-            .reset_index(drop=True)
-        )
+        return pd.DataFrame()
+
+    base["match_id"] = base["match_id"].astype(str)
+    base["match_kickoff"] = pd.to_datetime(base["match_kickoff"], utc=True, errors="coerce")
+    base = (
+        base.sort_values("match_kickoff")
+        .groupby("match_id", as_index=False, sort=False)
+        .first()
+        .sort_values("match_kickoff")
+        .reset_index(drop=True)
+    )
 
     if "segment" not in base.columns:
         base["segment"] = pd.NA
-    base["segment"] = pd.to_numeric(base["segment"], errors="coerce").ffill().fillna(1)
+    base["segment"] = (
+        pd.to_numeric(base["segment"], errors="coerce")
+        .ffill()
+        .bfill()
+        .fillna(1)
+    )
     if "kickoff_et" not in base.columns:
-        kickoff_et_series = pd.to_datetime(base.get("match_kickoff"), utc=True, errors="coerce")
+        kickoff_et_series = pd.to_datetime(
+            base.get("match_kickoff"), utc=True, errors="coerce"
+        )
         base["kickoff_et"] = kickoff_et_series.dt.tz_convert(EASTERN_TZ).dt.strftime(
             "%Y-%m-%d %I:%M %p ET"
         )
         base["kickoff_et"] = base["kickoff_et"].fillna("TBD")
 
-    base["match_id"] = base["match_id"].astype(str)
     sheet_fixtures = load_actual_results(conn)
     if sheet_fixtures.empty:
         base["final_home"] = pd.to_numeric(base.get("final_home"), errors="coerce")
         base["final_away"] = pd.to_numeric(base.get("final_away"), errors="coerce")
+        base["home_score"] = pd.NA
+        base["away_score"] = pd.NA
         base["is_finished"] = False
         return base
 
     merged = base.merge(
         sheet_fixtures, on="match_id", how="left", suffixes=("", "_sheet")
     )
-    merged["segment"] = pd.to_numeric(merged["segment"], errors="coerce").ffill().fillna(1)
+    merged["segment"] = (
+        pd.to_numeric(merged["segment"], errors="coerce")
+        .ffill()
+        .bfill()
+        .fillna(1)
+    )
     merged["final_home"] = pd.to_numeric(merged.get("final_home"), errors="coerce")
     merged["final_away"] = pd.to_numeric(merged.get("final_away"), errors="coerce")
     merged["home_score"] = pd.to_numeric(merged.get("home_score"), errors="coerce")
     merged["away_score"] = pd.to_numeric(merged.get("away_score"), errors="coerce")
     merged["final_home"] = merged["home_score"].fillna(merged["final_home"])
     merged["final_away"] = merged["away_score"].fillna(merged["final_away"])
-    merged = merged.drop(columns=["home_score", "away_score"], errors="ignore")
     merged["is_finished"] = merged["is_finished"].fillna(False).astype(bool)
     return merged
 
@@ -591,13 +607,13 @@ def upsert_user_prediction(conn: GSheetsConnection, row: dict[str, Any]) -> bool
 
 
 def determine_prediction_target(
-    fixtures: pd.DataFrame, now_utc: datetime
+    fixtures_df: pd.DataFrame, now_utc: datetime
 ) -> tuple[Optional[pd.Series], Optional[str]]:
     """Return one next-match target and optional lock message."""
-    if fixtures.empty:
+    if fixtures_df.empty:
         return None, "No Atlanta United MLS fixtures were returned from the API."
 
-    with_kickoff = fixtures[fixtures["match_kickoff"].notna()].copy()
+    with_kickoff = fixtures_df[fixtures_df["match_kickoff"].notna()].copy()
     with_kickoff = with_kickoff.sort_values("match_kickoff")
     if with_kickoff.empty:
         return None, "No fixture kickoff timestamps are available."
@@ -635,11 +651,13 @@ def build_recent_results(fixtures_reference_df: pd.DataFrame) -> pd.DataFrame:
     if merged.empty:
         return pd.DataFrame()
 
-    return (
+    df = (
         merged.sort_values("match_kickoff", ascending=False)
         .head(10)
         .reset_index(drop=True)
     )
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    return df
 
 
 def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
