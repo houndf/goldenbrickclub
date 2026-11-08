@@ -671,7 +671,7 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 
 
 # Temporary maintenance mode: keep the application code intact but prevent access.
-st.title("Analyzing results. Check back later.")
+st.title("Results in! Watch the video below.")
 st.markdown(
     """
     <style>
