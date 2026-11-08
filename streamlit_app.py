@@ -684,13 +684,15 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.link_button(
-    "Visit the new GoldenBrickClub site!",
-    "https://goldenbrickclubv2-nuya.vercel.app/",
-    type="primary",
-    use_container_width=True,
-)
-st.video("https://www.youtube.com/watch?v=jeoEp_oHqiQ")
+_, media_column, _ = st.columns([1, 3, 1])
+with media_column:
+    st.video("https://www.youtube.com/watch?v=jeoEp_oHqiQ")
+    st.link_button(
+        "Visit the new GoldenBrickClub site!",
+        "https://goldenbrickclubv2-nuya.vercel.app/",
+        type="primary",
+        use_container_width=True,
+    )
 st.stop()
 
 
