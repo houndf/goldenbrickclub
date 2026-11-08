@@ -18,6 +18,10 @@ st.set_page_config(
     page_title="Golden Brick Club - AUDFC Prediction League", layout="wide"
 )
 
+# Temporary maintenance mode: keep the application code intact but prevent access.
+st.title("Analyzing results. Check back later.")
+st.stop()
+
 SCHEDULE_FILE = Path(__file__).with_name("schedule.json")
 API_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 MLS_LEAGUE_ID = 4346
