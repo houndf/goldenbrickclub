@@ -672,6 +672,24 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
 
 # Temporary maintenance mode: keep the application code intact but prevent access.
 st.title("Analyzing results. Check back later.")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stLinkButton"] a {
+        font-size: 1.35rem;
+        font-weight: 700;
+        padding: 0.9rem 1.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+st.link_button(
+    "Visit the new GoldenBrickClub site!",
+    "https://goldenbrickclubv2-nuya.vercel.app/",
+    type="primary",
+    use_container_width=True,
+)
 st.video("https://www.youtube.com/watch?v=jeoEp_oHqiQ")
 st.stop()
 
