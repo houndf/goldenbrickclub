@@ -670,48 +670,10 @@ def format_countdown(kickoff: datetime, now_utc: datetime) -> str:
     return f"{days}d {hours}h {mins}m"
 
 
-# Temporary maintenance mode. Only the designated account may continue to the app.
-MAINTENANCE_BYPASS_USER = "stripedmoustache"
-st.session_state.setdefault("logged_in_user", None)
-st.session_state.setdefault("maintenance_login_name", "")
-st.session_state.setdefault("maintenance_login_passcode", "")
-
-if st.session_state.get("logged_in_user") != MAINTENANCE_BYPASS_USER:
-    st.title("Analyzing results. Check back later.")
-
-    with st.form("maintenance_login_form", clear_on_submit=False):
-        maintenance_user_name = st.text_input(
-            "Name",
-            placeholder="Username",
-            key="maintenance_login_name",
-        )
-        maintenance_passcode = st.text_input(
-            "Passcode",
-            type="password",
-            key="maintenance_login_passcode",
-            help="Use your existing Golden Brick Club passcode.",
-        )
-        maintenance_login_clicked = st.form_submit_button(
-            "Log In",
-            type="primary",
-        )
-
-    if maintenance_login_clicked:
-        entered_name = maintenance_user_name.strip()
-        entered_passcode = maintenance_passcode.strip()
-        users = load_users()
-
-        if (
-            entered_name == MAINTENANCE_BYPASS_USER
-            and users.get(entered_name) == entered_passcode
-            and entered_passcode
-        ):
-            st.session_state["logged_in_user"] = entered_name
-            st.rerun()
-        else:
-            st.error("Invalid name or passcode")
-
-    st.stop()
+# Temporary maintenance mode: keep the application code intact but prevent access.
+st.title("Analyzing results. Check back later.")
+st.video("https://www.youtube.com/watch?v=jeoEp_oHqiQ")
+st.stop()
 
 
 st.title("⚽ Golden Brick Club")
